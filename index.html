@@ -4,29 +4,418 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Loto Vui</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-      // Suppress the Tailwind CDN warning in production to keep console clean
-      const originalWarn = console.warn;
-      console.warn = (...args) => {
-        if (args[0] && typeof args[0] === 'string' && args[0].includes('cdn.tailwindcss.com')) return;
-        originalWarn.apply(console, args);
-      };
-    </script>
     <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
     <style>
+      :root {
+        --primary: #dc2626; /* red-600 */
+        --primary-dark: #b91c1c; /* red-700 */
+        --primary-light: #fef2f2; /* red-50 */
+        --secondary: #facc15; /* yellow-400 */
+        --secondary-dark: #ca8a04; /* yellow-600 */
+        --text-main: #1f2937; /* gray-800 */
+        --text-muted: #6b7280; /* gray-500 */
+        --bg-body: #fef2f2;
+        --white: #ffffff;
+        --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        --radius: 0.75rem;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
       body {
         font-family: 'Nunito', sans-serif;
-        background-color: #FEF2F2; /* red-50 */
+        background-color: var(--bg-body);
+        color: var(--text-main);
+        margin: 0;
+        padding: 0;
+        min-height: 100vh;
       }
-      /* Custom scrollbar for number board */
-      .no-scrollbar::-webkit-scrollbar {
-        display: none;
+
+      /* Layout Utilities */
+      .container {
+        max-width: 56rem; /* 4xl */
+        margin: 0 auto;
+        padding: 1rem;
       }
-      .no-scrollbar {
-        -ms-overflow-style: none;
-        scrollbar-width: none;
+
+      .flex { display: flex; }
+      .flex-col { flex-direction: column; }
+      .items-center { align-items: center; }
+      .justify-center { justify-content: center; }
+      .justify-between { justify-content: space-between; }
+      .gap-2 { gap: 0.5rem; }
+      .gap-4 { gap: 1rem; }
+      .gap-6 { gap: 1.5rem; }
+      .w-full { width: 100%; }
+      .text-center { text-align: center; }
+      .hidden { display: none; }
+
+      /* Component: Header */
+      .app-header {
+        background-color: var(--primary);
+        color: var(--white);
+        padding: 1rem;
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        box-shadow: var(--shadow);
       }
+      .header-content {
+        max-width: 56rem;
+        margin: 0 auto;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-weight: 700;
+        font-size: 1.25rem;
+      }
+      .room-badge {
+        background-color: var(--primary-dark);
+        padding: 0.25rem 0.75rem;
+        border-radius: 9999px;
+        font-size: 0.875rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      /* Component: Card */
+      .card {
+        background-color: var(--white);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        padding: 1.5rem;
+        border: 1px solid #e5e7eb;
+      }
+
+      /* Component: Buttons */
+      .btn {
+        padding: 0.75rem 1.5rem;
+        border-radius: 0.5rem;
+        font-weight: 700;
+        border: none;
+        cursor: pointer;
+        transition: all 0.2s;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        font-size: 1rem;
+      }
+      .btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .btn:active {
+        transform: scale(0.98);
+      }
+      .btn-primary {
+        background-color: var(--primary);
+        color: var(--white);
+      }
+      .btn-primary:hover:not(:disabled) {
+        background-color: var(--primary-dark);
+      }
+      .btn-warning {
+        background-color: var(--secondary);
+        color: #713f12; /* yellow-900 */
+        border-bottom: 4px solid var(--secondary-dark);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .btn-warning:active {
+        border-bottom-width: 0;
+        transform: translateY(4px);
+      }
+
+      /* Component: Lobby */
+      .lobby-wrapper {
+        min-height: 80vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1rem;
+      }
+      .lobby-card {
+        background: var(--white);
+        width: 100%;
+        max-width: 28rem;
+        border-radius: 1rem;
+        overflow: hidden;
+        box-shadow: var(--shadow-lg);
+        border-top: 4px solid var(--primary);
+      }
+      .lobby-tabs {
+        display: flex;
+        border-bottom: 1px solid #e5e7eb;
+      }
+      .tab-btn {
+        flex: 1;
+        padding: 1rem;
+        border: none;
+        background: transparent;
+        font-weight: 700;
+        text-transform: uppercase;
+        cursor: pointer;
+        color: var(--text-muted);
+      }
+      .tab-btn.active {
+        color: var(--primary);
+        background-color: var(--primary-light);
+        border-bottom: 2px solid var(--primary);
+      }
+      .input-group {
+        margin-bottom: 1.5rem;
+      }
+      .input-wrapper {
+        position: relative;
+      }
+      .input-icon {
+        position: absolute;
+        left: 0.75rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: #9ca3af;
+      }
+      .form-input {
+        width: 100%;
+        padding: 0.75rem 1rem 0.75rem 2.5rem;
+        border: 1px solid #d1d5db;
+        border-radius: 0.5rem;
+        outline: none;
+        font-size: 1rem;
+      }
+      .form-input:focus {
+        border-color: var(--primary);
+        box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.2);
+      }
+
+      /* Component: MC Caller */
+      .mc-section {
+        background: linear-gradient(to right, #fff7ed, #fef2f2);
+        border: 2px solid #fed7aa;
+        border-radius: 1rem;
+        padding: 1.5rem;
+        text-align: center;
+        margin-bottom: 1.5rem;
+      }
+      .mc-title {
+        color: var(--primary);
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+      }
+      .mc-text {
+        font-size: 1.25rem;
+        font-style: italic;
+        font-family: serif;
+        min-height: 3.5rem;
+      }
+      .current-number {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 6rem;
+        height: 6rem;
+        background-color: var(--primary);
+        color: var(--white);
+        font-size: 3rem;
+        font-weight: 800;
+        border-radius: 50%;
+        border: 4px solid var(--secondary);
+        box-shadow: var(--shadow-lg);
+        animation: bounce 1s infinite;
+        margin-top: 1rem;
+      }
+
+      /* Component: Ticket */
+      .ticket-container {
+        background: var(--white);
+        padding: 0.5rem;
+        border-radius: 0.5rem;
+        border: 2px solid var(--primary);
+        overflow-x: auto;
+        box-shadow: var(--shadow);
+      }
+      .ticket-row {
+        display: grid;
+        grid-template-columns: repeat(9, 1fr);
+        gap: 0.25rem;
+        height: 3rem;
+        margin-bottom: 0.25rem;
+        min-width: 320px;
+      }
+      .ticket-cell {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 700;
+        border-radius: 0.25rem;
+        cursor: pointer;
+        user-select: none;
+        font-size: 0.9rem;
+      }
+      .cell-empty { background-color: #f9fafb; }
+      .cell-number { 
+        background-color: #fefce8; 
+        color: var(--text-main);
+        border: 1px solid #fef08a;
+      }
+      .cell-number:hover { background-color: #fef9c3; }
+      .cell-marked {
+        background-color: var(--primary);
+        color: var(--white);
+        transform: scale(0.95);
+        box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.2);
+        border: none;
+      }
+      .ticket-separator {
+        border-bottom: 2px dashed #d1d5db;
+        margin: 0.5rem 0;
+        position: relative;
+        height: 1px;
+      }
+      .ticket-label {
+        position: absolute;
+        top: -0.6rem;
+        left: 0;
+        background: var(--white);
+        padding: 0 0.25rem;
+        font-size: 0.7rem;
+        color: #9ca3af;
+      }
+
+      /* Component: NumberBoard */
+      .board-grid {
+        display: grid;
+        grid-template-columns: repeat(10, 1fr);
+        gap: 0.25rem;
+      }
+      .board-cell {
+        aspect-ratio: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        font-size: 0.75rem;
+        font-weight: 600;
+      }
+      .board-called { background-color: #374151; color: var(--white); }
+      .board-default { background-color: #f3f4f6; color: #d1d5db; }
+      .board-active {
+        background-color: var(--primary);
+        color: var(--white);
+        transform: scale(1.15);
+        border: 2px solid #fca5a5;
+        z-index: 10;
+      }
+
+      /* Component: Player List */
+      .player-list {
+        max-height: 300px;
+        overflow-y: auto;
+      }
+      .player-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.75rem;
+        border-radius: 0.5rem;
+        margin-bottom: 0.5rem;
+        background-color: #f9fafb;
+      }
+      .player-item.is-me {
+        background-color: #fefce8;
+        border: 1px solid #fef08a;
+      }
+      .avatar {
+        width: 2rem;
+        height: 2rem;
+        border-radius: 50%;
+        background: linear-gradient(135deg, #4ade80, #16a34a);
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+        font-size: 0.8rem;
+      }
+
+      /* Modal/Overlay */
+      .overlay {
+        position: fixed;
+        inset: 0;
+        background-color: rgba(0,0,0,0.7);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 100;
+        backdrop-filter: blur(4px);
+      }
+      .modal {
+        background: var(--white);
+        padding: 2rem;
+        border-radius: 1.5rem;
+        text-align: center;
+        max-width: 24rem;
+        width: 90%;
+        box-shadow: var(--shadow-lg);
+        border: 4px solid var(--secondary);
+      }
+      .modal-icon {
+        width: 5rem;
+        height: 5rem;
+        background-color: #fefce8;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0 auto 1.5rem auto;
+        color: var(--secondary-dark);
+      }
+
+      /* Utilities */
+      .grid-layout {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 1.5rem;
+      }
+      
+      .text-primary { color: var(--primary); }
+      .text-secondary { color: var(--secondary-dark); }
+      .font-bold { font-weight: 700; }
+      
+      /* Animations */
+      @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      .animate-spin { animation: spin 1s linear infinite; }
+      
+      @keyframes bounce { 
+        0%, 100% { transform: translateY(0); } 
+        50% { transform: translateY(-10px); } 
+      }
+
+      /* Responsive */
+      @media (min-width: 1024px) {
+        .grid-layout {
+          grid-template-columns: 2fr 1fr;
+        }
+      }
+      
+      /* Scrollbar */
+      .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+      .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+      .custom-scrollbar::-webkit-scrollbar-thumb { background-color: #d1d5db; border-radius: 3px; }
     </style>
   <script type="importmap">
 {

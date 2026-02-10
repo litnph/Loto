@@ -26,71 +26,62 @@ const Lobby: React.FC<LobbyProps> = ({ onCreateRoom, onJoinRoom, isCreating }) =
   };
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] px-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden border-t-4 border-red-500">
+    <div className="lobby-wrapper">
+      <div className="lobby-card">
         
-        {/* Header Title */}
-        <div className="text-center pt-8 pb-6">
-          <h1 className="text-4xl font-extrabold text-red-600 mb-2">LOTO VUI</h1>
-          <p className="text-gray-500">Trò chơi dân gian vui nhộn</p>
+        <div className="text-center" style={{paddingTop: '2rem', paddingBottom: '1.5rem'}}>
+          <h1 className="text-primary" style={{fontSize: '2.25rem', fontWeight: '800', margin: 0}}>LOTO VUI</h1>
+          <p className="text-muted" style={{margin: 0}}>Trò chơi dân gian vui nhộn</p>
         </div>
 
-        {/* Tabs */}
-        <div className="flex border-b border-gray-200">
+        <div className="lobby-tabs">
           <button
             type="button"
             onClick={() => setMode('create')}
-            className={`flex-1 py-4 text-sm font-bold uppercase tracking-wide transition-colors ${
-              mode === 'create' 
-                ? 'text-red-600 border-b-2 border-red-600 bg-red-50' 
-                : 'text-gray-500 hover:bg-gray-50'
-            }`}
+            className={`tab-btn ${mode === 'create' ? 'active' : ''}`}
           >
             Tạo Phòng
           </button>
           <button
             type="button"
             onClick={() => setMode('join')}
-            className={`flex-1 py-4 text-sm font-bold uppercase tracking-wide transition-colors ${
-              mode === 'join' 
-                ? 'text-red-600 border-b-2 border-red-600 bg-red-50' 
-                : 'text-gray-500 hover:bg-gray-50'
-            }`}
+            className={`tab-btn ${mode === 'join' ? 'active' : ''}`}
           >
             Vào Phòng
           </button>
         </div>
 
-        <div className="p-8">
-          <form onSubmit={handleSubmit} className="space-y-6">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Tên của bạn</label>
-              <div className="relative">
+        <div style={{padding: '2rem'}}>
+          <form onSubmit={handleSubmit}>
+            <div className="input-group">
+              <label style={{display: 'block', fontSize: '0.875rem', fontWeight: '500', marginBottom: '0.25rem'}}>Tên của bạn</label>
+              <div className="input-wrapper">
                 <input
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition-all"
+                  className="form-input"
                   placeholder="Nhập tên hiển thị..."
                   required
                 />
-                <User className="absolute left-3 top-3.5 h-5 w-5 text-gray-400" />
+                <User className="input-icon" size={20} />
               </div>
             </div>
 
             {mode === 'join' && (
-              <div className="animate-in fade-in slide-in-from-top-2 duration-300">
-                <label className="block text-sm font-medium text-gray-700 mb-1">Mã Phòng</label>
-                <div className="relative">
+              <div className="input-group" style={{animation: 'fadeIn 0.3s ease-out'}}>
+                <label style={{display: 'block', fontSize: '0.875rem', fontWeight: '500', marginBottom: '0.25rem'}}>Mã Phòng</label>
+                <div className="input-wrapper">
                   <input
                     type="text"
                     value={roomCode}
                     onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
-                    className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition-all font-mono uppercase"
+                    className="form-input"
                     placeholder="Nhập mã phòng (VD: X8K9L)"
+                    style={{fontFamily: 'monospace', textTransform: 'uppercase'}}
                     required
                   />
-                  <Users className="absolute left-3 top-3.5 h-5 w-5 text-gray-400" />
+                  <Users className="input-icon" size={20} />
                 </div>
               </div>
             )}
@@ -98,30 +89,26 @@ const Lobby: React.FC<LobbyProps> = ({ onCreateRoom, onJoinRoom, isCreating }) =
             <button
               type="submit"
               disabled={!name.trim() || (mode === 'join' && !roomCode.trim()) || isCreating}
-              className={`w-full flex items-center justify-center space-x-2 text-white font-bold py-3 px-6 rounded-lg transform transition-all hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
-                 mode === 'create' 
-                 ? 'bg-gradient-to-r from-red-500 to-orange-500 hover:from-red-600 hover:to-orange-600'
-                 : 'bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600'
-              }`}
+              className="btn btn-primary w-full"
             >
               {isCreating ? (
-                <Loader2 className="animate-spin h-5 w-5" />
+                <Loader2 className="animate-spin" size={20} />
               ) : mode === 'create' ? (
                 <>
-                  <Play className="h-5 w-5" />
+                  <Play size={20} />
                   <span>Tạo Phòng Mới</span>
                 </>
               ) : (
                 <>
-                  <LogIn className="h-5 w-5" />
+                  <LogIn size={20} />
                   <span>Vào Phòng Ngay</span>
                 </>
               )}
             </button>
             
-            <div className="text-center text-xs text-gray-400 mt-4">
+            <div className="text-center" style={{fontSize: '0.75rem', color: '#9ca3af', marginTop: '1rem'}}>
               {mode === 'create' 
-                ? 'Mã phòng sẽ được tạo tự động. Các người chơi AI sẽ tham gia cùng bạn.' 
+                ? 'Mã phòng sẽ được tạo tự động để bạn chia sẻ.' 
                 : 'Nhập mã phòng từ bạn bè để tham gia trò chơi.'}
             </div>
           </form>
