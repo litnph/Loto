@@ -50,6 +50,45 @@ const App: React.FC = () => {
     });
   };
 
+  const joinRoom = (playerName: string, roomCode: string) => {
+    // Simulate joining a room. 
+    // Since we don't have a backend, we create a room with that code
+    // and add a "Host Bot" so the user feels like a guest.
+    const myTicket = generateTicket();
+    
+    // Create the User (Guest)
+    const newPlayer: Player = {
+      id: 'guest-' + Date.now(),
+      name: playerName,
+      isHost: false,
+      isBot: false,
+      ticket: myTicket,
+      markedNumbers: new Set(),
+    };
+
+    // Create a Fake Host Bot
+    const hostBotTicket = generateTicket();
+    const hostBot: Player = {
+      id: 'host-bot',
+      name: 'Chủ Phòng (Bot)',
+      isHost: true,
+      isBot: true,
+      ticket: hostBotTicket,
+      markedNumbers: new Set(),
+    };
+
+    setPlayerId(newPlayer.id);
+    setGameState({
+      code: roomCode,
+      players: [hostBot, newPlayer],
+      status: 'waiting',
+      calledNumbers: [],
+      currentNumber: null,
+      winner: null,
+      mcCommentary: 'Đã vào phòng! Chờ chủ phòng bắt đầu...',
+    });
+  };
+
   // Manual Add Bot function
   const addBot = () => {
     setGameState((prev) => {
@@ -76,15 +115,17 @@ const App: React.FC = () => {
     });
   };
 
-  const startGame = () => {
+  const startGame = useCallback(() => {
     // Allow starting with 1 player for testing if needed, though 2 is standard
-    if (gameState.players.length < 1) return; 
-    setGameState(prev => ({
-      ...prev,
-      status: 'playing',
-      mcCommentary: 'Trò chơi bắt đầu! Chuẩn bị dò số nào...',
-    }));
-  };
+    setGameState(prev => {
+        if (prev.players.length < 1) return prev;
+        return {
+            ...prev,
+            status: 'playing',
+            mcCommentary: 'Trò chơi bắt đầu! Chuẩn bị dò số nào...',
+        };
+    });
+  }, []);
 
   const drawNumber = useCallback(async () => {
     setGameState(prev => {
@@ -117,6 +158,18 @@ const App: React.FC = () => {
       };
     });
   }, []);
+
+  // Effect to simulate Host Bot starting the game if user is Guest
+  useEffect(() => {
+     const me = gameState.players.find(p => p.id === playerId);
+     // If I am in a room, waiting, and NOT the host, the "Host" should start it eventually
+     if (gameState.status === 'waiting' && me && !me.isHost && gameState.players.length >= 2) {
+         const timer = setTimeout(() => {
+             startGame();
+         }, 3000); // Host starts game after 3 seconds
+         return () => clearTimeout(timer);
+     }
+  }, [gameState.status, gameState.players, playerId, startGame]);
 
   // Effect to handle Game Loop (Calling Numbers)
   useEffect(() => {
@@ -221,7 +274,7 @@ const App: React.FC = () => {
   const isHost = me?.isHost;
 
   if (gameState.status === 'lobby') {
-    return <Lobby onCreateRoom={createRoom} isCreating={false} />;
+    return <Lobby onCreateRoom={createRoom} onJoinRoom={joinRoom} isCreating={false} />;
   }
 
   return (
@@ -263,7 +316,7 @@ const App: React.FC = () => {
                     Thêm Bot
                   </button>
                   <button 
-                    onClick={startGame}
+                    onClick={() => startGame()}
                     disabled={gameState.players.length < 2}
                     className="bg-red-500 hover:bg-red-600 disabled:bg-gray-300 disabled:text-gray-500 text-white font-bold py-3 px-8 rounded-full shadow-lg transform transition hover:scale-105 active:scale-95 disabled:scale-100 disabled:cursor-not-allowed"
                   >
@@ -271,7 +324,11 @@ const App: React.FC = () => {
                   </button>
               </div>
             )}
-            {!isHost && <p className="text-gray-400 italic">Chờ chủ phòng bắt đầu...</p>}
+            {!isHost && (
+               <div className="animate-pulse text-gray-500 italic mt-4">
+                  Đang chờ chủ phòng bắt đầu... (Tự động sau 3 giây)
+               </div>
+            )}
           </div>
         )}
 
