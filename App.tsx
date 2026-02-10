@@ -10,6 +10,21 @@ import Peer, { DataConnection } from 'peerjs';
 
 const ROOM_PREFIX = 'loto-vui-vn-v2-';
 
+// Cấu hình máy chủ STUN để hỗ trợ kết nối xuyên mạng (Wifi khác nhau/4G)
+const PEER_CONFIG = {
+  debug: 1,
+  config: {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' },
+      { urls: 'stun:global.stun.twilio.com:3478' }
+    ],
+  },
+};
+
 const App: React.FC = () => {
   const [gameState, setGameState] = useState<RoomState>({
     code: '',
@@ -69,7 +84,8 @@ const App: React.FC = () => {
     const shortCode = Math.random().toString(36).substring(2, 7).toUpperCase();
     const fullRoomId = ROOM_PREFIX + shortCode;
 
-    const peer = new Peer(fullRoomId, { debug: 1 });
+    // Áp dụng cấu hình STUN servers cho Host
+    const peer = new Peer(fullRoomId, PEER_CONFIG);
 
     peer.on('open', (id) => {
       const myTicket = generateTicket();
@@ -132,6 +148,8 @@ const App: React.FC = () => {
       setIsConnecting(false);
       if (err.type === 'unavailable-id') {
          setConnectionError('Mã phòng bị trùng. Vui lòng thử lại.');
+      } else if (err.type === 'network' || err.type === 'disconnected') {
+         setConnectionError('Lỗi mạng. Vui lòng kiểm tra kết nối internet.');
       } else {
          setConnectionError(`Lỗi tạo phòng: ${err.type}`);
       }
@@ -143,15 +161,17 @@ const App: React.FC = () => {
     setIsConnecting(true);
     setConnectionError('');
     const fullRoomId = ROOM_PREFIX + roomCode.toUpperCase();
-    const peer = new Peer();
+    
+    // Áp dụng cấu hình STUN servers cho Guest
+    const peer = new Peer(PEER_CONFIG);
 
     const connectionTimeout = setTimeout(() => {
         if (isConnecting) {
-            setConnectionError("Không tìm thấy phòng hoặc kết nối quá lâu. Vui lòng kiểm tra mã phòng.");
+            setConnectionError("Không thể kết nối tới phòng. Có thể do mạng chặn hoặc sai mã phòng.");
             setIsConnecting(false);
             peer.destroy();
         }
-    }, 8000);
+    }, 10000); // Tăng thời gian chờ lên 10s cho mạng chậm
 
     peer.on('open', (id) => {
       setPlayerId(id);
@@ -188,7 +208,7 @@ const App: React.FC = () => {
     peer.on('error', (err) => {
         clearTimeout(connectionTimeout);
         setIsConnecting(false);
-        setConnectionError('Lỗi kết nối máy chủ Peer.');
+        setConnectionError('Lỗi kết nối máy chủ Peer. Hãy thử tải lại trang.');
     });
     peerRef.current = peer;
   };
