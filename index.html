@@ -7,7 +7,6 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
       // Suppress the Tailwind CDN warning in production to keep console clean
-      // This is safe for this specific deployment type
       const originalWarn = console.warn;
       console.warn = (...args) => {
         if (args[0] && typeof args[0] === 'string' && args[0].includes('cdn.tailwindcss.com')) return;
@@ -34,6 +33,7 @@
   "imports": {
     "lucide-react": "https://esm.sh/lucide-react@^0.563.0",
     "@google/genai": "https://esm.sh/@google/genai@^1.40.0",
+    "peerjs": "https://esm.sh/peerjs@1.5.2",
     "react/": "https://esm.sh/react@^19.2.4/",
     "react": "https://esm.sh/react@^19.2.4",
     "react-dom/": "https://esm.sh/react-dom@^19.2.4/"
