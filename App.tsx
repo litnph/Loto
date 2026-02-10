@@ -5,7 +5,7 @@ import Lobby from './components/Lobby';
 import Ticket from './components/Ticket';
 import NumberBoard from './components/NumberBoard';
 import { generateMCCommentary } from './services/geminiService';
-import { Users, Trophy, Play, Volume2, Info, UserCircle2 } from 'lucide-react';
+import { Users, Trophy, Play, Volume2, Info, UserCircle2, UserPlus } from 'lucide-react';
 
 const App: React.FC = () => {
   const [gameState, setGameState] = useState<RoomState>({
@@ -21,9 +21,8 @@ const App: React.FC = () => {
   const [playerId, setPlayerId] = useState<string>('');
   const [mcLoading, setMcLoading] = useState(false);
   
-  // Refs for intervals to clear them properly
-  const callIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const botJoinIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Ref typed as any to avoid NodeJS namespace issues during Vercel build
+  const callIntervalRef = useRef<any>(null);
 
   // Initialize Audio Context for generic sound (optional, kept simple for now)
   
@@ -51,42 +50,35 @@ const App: React.FC = () => {
     });
   };
 
-  // Simulate bots joining
-  useEffect(() => {
-    if (gameState.status === 'waiting' && gameState.players.length < 5) {
-      botJoinIntervalRef.current = setInterval(() => {
-        setGameState((prev) => {
-          if (prev.status !== 'waiting' || prev.players.length >= 5) return prev;
-          
-          const botNames = ['Bà Tám', 'Cô Ba', 'Chú Bảy', 'Anh Tư'];
-          const existingBots = prev.players.filter(p => p.isBot).length;
-          if (existingBots >= botNames.length) return prev;
+  // Manual Add Bot function
+  const addBot = () => {
+    setGameState((prev) => {
+        const botNames = ['Bà Tám', 'Cô Ba', 'Chú Bảy', 'Anh Tư', 'Chị Năm', 'Bác Sáu'];
+        const existingBots = prev.players.filter(p => p.isBot).length;
+        // Cycle names or append number if exhausted
+        const baseName = botNames[existingBots % botNames.length];
+        const suffix = existingBots >= botNames.length ? ` ${Math.floor(existingBots / botNames.length) + 1}` : '';
+        
+        const botTicket = generateTicket();
+        const newBot: Player = {
+          id: `bot-${Date.now()}`,
+          name: `${baseName}${suffix} (Bot)`,
+          isHost: false,
+          isBot: true,
+          ticket: botTicket,
+          markedNumbers: new Set(),
+        };
 
-          const botTicket = generateTicket();
-          const newBot: Player = {
-            id: `bot-${Date.now()}`,
-            name: `${botNames[existingBots]} (Bot)`,
-            isHost: false,
-            isBot: true,
-            ticket: botTicket,
-            markedNumbers: new Set(),
-          };
-
-          return {
-            ...prev,
-            players: [...prev.players, newBot],
-          };
-        });
-      }, 2000);
-    }
-
-    return () => {
-      if (botJoinIntervalRef.current) clearInterval(botJoinIntervalRef.current);
-    };
-  }, [gameState.status]);
+        return {
+          ...prev,
+          players: [...prev.players, newBot],
+        };
+    });
+  };
 
   const startGame = () => {
-    if (gameState.players.length < 2) return;
+    // Allow starting with 1 player for testing if needed, though 2 is standard
+    if (gameState.players.length < 1) return; 
     setGameState(prev => ({
       ...prev,
       status: 'playing',
@@ -124,9 +116,6 @@ const App: React.FC = () => {
         })
       };
     });
-    
-    // After state update, trigger Gemini commentary for the NEW number
-    // We need to access the new number. Best to do it inside the interval logic but outside the state setter or use an effect.
   }, []);
 
   // Effect to handle Game Loop (Calling Numbers)
@@ -255,7 +244,7 @@ const App: React.FC = () => {
         {/* Status Area */}
         {gameState.status === 'waiting' && (
           <div className="bg-white p-6 rounded-xl shadow-md text-center space-y-4">
-            <h2 className="text-2xl font-bold text-gray-700">Đang chờ người chơi...</h2>
+            <h2 className="text-2xl font-bold text-gray-700">Phòng Chờ (Waiting Room)</h2>
             <div className="flex flex-wrap justify-center gap-4">
               {gameState.players.map(p => (
                 <div key={p.id} className="flex items-center space-x-2 bg-gray-100 px-4 py-2 rounded-full border border-gray-200">
@@ -265,13 +254,22 @@ const App: React.FC = () => {
               ))}
             </div>
             {isHost && (
-              <button 
-                onClick={startGame}
-                disabled={gameState.players.length < 2}
-                className="mt-4 bg-red-500 hover:bg-red-600 disabled:bg-gray-300 text-white font-bold py-3 px-8 rounded-full shadow-lg transform transition hover:scale-105 active:scale-95 disabled:scale-100 disabled:cursor-not-allowed"
-              >
-                {gameState.players.length < 2 ? `Cần ít nhất 2 người` : `BẮT ĐẦU (START)`}
-              </button>
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mt-4">
+                  <button 
+                    onClick={addBot}
+                    className="flex items-center gap-2 bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-full shadow-lg transition-transform active:scale-95"
+                  >
+                    <UserPlus size={20} />
+                    Thêm Bot
+                  </button>
+                  <button 
+                    onClick={startGame}
+                    disabled={gameState.players.length < 2}
+                    className="bg-red-500 hover:bg-red-600 disabled:bg-gray-300 disabled:text-gray-500 text-white font-bold py-3 px-8 rounded-full shadow-lg transform transition hover:scale-105 active:scale-95 disabled:scale-100 disabled:cursor-not-allowed"
+                  >
+                    {gameState.players.length < 2 ? `Cần thêm người chơi` : `BẮT ĐẦU (START)`}
+                  </button>
+              </div>
             )}
             {!isHost && <p className="text-gray-400 italic">Chờ chủ phòng bắt đầu...</p>}
           </div>
@@ -367,8 +365,6 @@ const App: React.FC = () => {
                                         </span>
                                     </div>
                                     <div className="text-gray-400 text-xs">
-                                        {/* Show marked count only for bots or self to simulate 'seeing' progress without cheating? 
-                                            Actually, showing all adds tension. */}
                                         {markedCount} số
                                     </div>
                                 </div>

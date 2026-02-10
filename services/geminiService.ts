@@ -3,7 +3,8 @@ import { GoogleGenAI } from "@google/genai";
 let genAI: GoogleGenAI | null = null;
 
 try {
-  if (process.env.API_KEY) {
+  // Safe check for process to prevent Vercel/browser runtime errors if process is not polyfilled
+  if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
     genAI = new GoogleGenAI({ apiKey: process.env.API_KEY });
   }
 } catch (e) {
