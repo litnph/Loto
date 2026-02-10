@@ -5,11 +5,11 @@ import Lobby from './components/Lobby';
 import Ticket from './components/Ticket';
 import NumberBoard from './components/NumberBoard';
 import { generateMCCommentary } from './services/geminiService';
-import { Users, Trophy, Play, Volume2, Info, UserCircle2, Loader2, Wifi, WifiOff } from 'lucide-react';
+import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw } from 'lucide-react';
 import Peer, { DataConnection } from 'peerjs';
 
-// Prefix to avoid random collision on public PeerServer
-const ROOM_PREFIX = 'loto-vui-vn-';
+// Prefix helps avoid collisions on the public PeerServer
+const ROOM_PREFIX = 'loto-vui-vn-v2-';
 
 const App: React.FC = () => {
   const [gameState, setGameState] = useState<RoomState>({
@@ -27,18 +27,15 @@ const App: React.FC = () => {
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectionError, setConnectionError] = useState('');
   
-  // Ref to hold the Peer instance
+  // Refs for network management
   const peerRef = useRef<Peer | null>(null);
-  // Ref to hold connections to other players (if Host)
   const connectionsRef = useRef<DataConnection[]>([]);
-  // Ref to hold connection to Host (if Guest)
   const hostConnRef = useRef<DataConnection | null>(null);
-
   const callIntervalRef = useRef<any>(null);
 
   // --- Network Helpers ---
 
-  // Helper to send data to everyone (if Host)
+  // Host sends data to all connected guests
   const broadcast = useCallback((data: any) => {
     connectionsRef.current.forEach(conn => {
       if (conn.open) {
@@ -47,13 +44,13 @@ const App: React.FC = () => {
     });
   }, []);
 
-  // Helper to sync state to guests (convert Sets to Arrays for JSON transport)
+  // Host syncs the entire game state to guests
+  // Must convert Sets to Arrays because JSON cannot serialize Sets
   const syncStateToGuests = useCallback((currentState: RoomState) => {
     const payload = {
       type: 'SYNC_STATE',
       state: {
         ...currentState,
-        // Convert Set to Array for transmission
         players: currentState.players.map(p => ({
           ...p,
           markedNumbers: Array.from(p.markedNumbers)
@@ -63,25 +60,34 @@ const App: React.FC = () => {
     broadcast(payload);
   }, [broadcast]);
 
+  // --- Cleanup on Unmount ---
+  useEffect(() => {
+    return () => {
+      if (peerRef.current) peerRef.current.destroy();
+      if (callIntervalRef.current) clearInterval(callIntervalRef.current);
+    };
+  }, []);
+
   // --- Game Actions ---
 
   const createRoom = async (playerName: string) => {
     setIsConnecting(true);
     setConnectionError('');
     
-    // Create short code for display
+    // Generate a simple 5-char code
     const shortCode = Math.random().toString(36).substring(2, 7).toUpperCase();
     const fullRoomId = ROOM_PREFIX + shortCode;
 
-    // Init Peer as Host
+    // Create Peer as Host
     const peer = new Peer(fullRoomId, {
       debug: 1,
     });
 
     peer.on('open', (id) => {
-      console.log('My peer ID is: ' + id);
+      console.log('Host created with ID:', id);
       const myTicket = generateTicket();
-      const newPlayer: Player = {
+      
+      const hostPlayer: Player = {
         id: id,
         name: playerName,
         isHost: true,
@@ -94,7 +100,7 @@ const App: React.FC = () => {
       setPlayerId(id);
       setGameState({
         code: shortCode,
-        players: [newPlayer],
+        players: [hostPlayer],
         status: 'waiting',
         calledNumbers: [],
         currentNumber: null,
@@ -105,36 +111,59 @@ const App: React.FC = () => {
     });
 
     peer.on('connection', (conn) => {
-      console.log('Incoming connection from', conn.peer);
+      console.log('Guest connecting:', conn.peer);
       
       conn.on('data', (data: any) => {
         handleHostReceivedData(data, conn);
       });
 
       conn.on('open', () => {
-         // Keep track of connection
          connectionsRef.current.push(conn);
       });
 
       conn.on('close', () => {
+         // Remove connection
          connectionsRef.current = connectionsRef.current.filter(c => c !== conn);
+         
+         // Remove player from game state
          setGameState(prev => {
             const updatedPlayers = prev.players.filter(p => p.peerId !== conn.peer);
             const newState = { ...prev, players: updatedPlayers };
-            // Notify others that someone left
-            syncStateToGuests(newState); 
+            // Need to sync this change to remaining guests
+            // We use setTimeout to ensure state update has processed or just pass the derived state
+            // Passing derived state 'newState' to sync function is safer
+            // Note: We need to wrap sync in a small timeout or call it directly with the object
+            // However, syncStateToGuests relies on closure or args. Let's make a helper that takes state.
+            
+            // Hack: trigger sync after state update
+            setTimeout(() => {
+                // We must reconstruct the payload manually here because we can't easily access the fresh state inside this callback immediately
+                // Actually, 'newState' IS the fresh state.
+                const payload = {
+                    type: 'SYNC_STATE',
+                    state: {
+                        ...newState,
+                        players: newState.players.map(p => ({
+                        ...p,
+                        markedNumbers: Array.from(p.markedNumbers)
+                        }))
+                    }
+                };
+                connectionsRef.current.forEach(c => c.open && c.send(payload));
+            }, 100);
+
             return newState;
          });
       });
     });
 
     peer.on('error', (err) => {
-      console.error(err);
+      console.error('Peer Error:', err);
       setIsConnecting(false);
       if (err.type === 'unavailable-id') {
-         setConnectionError('Mã phòng bị trùng, vui lòng thử lại.');
+         setConnectionError('Mã phòng bị trùng. Vui lòng thử lại.');
       } else {
-         setConnectionError('Lỗi kết nối: ' + err.type);
+         setConnectionError(`Lỗi tạo phòng: ${err.type}`);
       }
     });
 
@@ -147,24 +176,32 @@ const App: React.FC = () => {
     
     const fullRoomId = ROOM_PREFIX + roomCode.toUpperCase();
     
-    // Init Peer as Guest (random ID)
+    // Guest just needs a random ID
     const peer = new Peer();
+
+    // Timeout if connection takes too long
+    const connectionTimeout = setTimeout(() => {
+        if (isConnecting) {
+            setConnectionError("Không tìm thấy phòng hoặc kết nối quá lâu. Vui lòng kiểm tra mã phòng.");
+            setIsConnecting(false);
+            peer.destroy();
+        }
+    }, 8000);
 
     peer.on('open', (id) => {
       setPlayerId(id);
-      console.log('Connected to PeerServer as ' + id);
       
-      // Connect to Host
       const conn = peer.connect(fullRoomId, {
          reliable: true
       });
 
       conn.on('open', () => {
-        console.log("Connected to Host");
+        clearTimeout(connectionTimeout);
+        console.log("Connected to Host successfully");
         setIsConnecting(false);
         hostConnRef.current = conn;
 
-        // Send Join Request
+        // Immediately send join request
         const myTicket = generateTicket();
         const joinPayload = {
             type: 'JOIN_REQUEST',
@@ -174,7 +211,7 @@ const App: React.FC = () => {
                 isHost: false,
                 isBot: false,
                 ticket: myTicket,
-                markedNumbers: [], // Send empty array
+                markedNumbers: [], 
                 peerId: id
             }
         };
@@ -186,36 +223,37 @@ const App: React.FC = () => {
       });
 
       conn.on('close', () => {
-        alert("Chủ phòng đã ngắt kết nối!");
+        alert("Kết nối với chủ phòng bị ngắt!");
         window.location.reload();
       });
-      
-      // Connection failure usually happens on 'error' of the peer, not conn
+
       conn.on('error', (err) => {
-          console.error("Conn error", err);
+          console.error("Connection error:", err);
       });
     });
 
     peer.on('error', (err) => {
-        console.error("Peer error", err);
+        clearTimeout(connectionTimeout);
+        console.error("Guest Peer Error:", err);
         setIsConnecting(false);
-        setConnectionError('Không tìm thấy phòng hoặc lỗi kết nối.');
+        setConnectionError('Lỗi kết nối máy chủ Peer.');
     });
 
     peerRef.current = peer;
   };
 
-  // --- Data Handlers ---
+  // --- Data Handling Logic ---
 
   const handleHostReceivedData = (data: any, conn: DataConnection) => {
       if (data.type === 'JOIN_REQUEST') {
           setGameState(prev => {
-              // Avoid duplicates
-              if (prev.players.find(p => p.id === data.player.id)) return prev;
+              // Prevent duplicate joins from same ID
+              if (prev.players.some(p => p.id === data.player.id)) return prev;
 
               const newPlayer: Player = {
                   ...data.player,
-                  markedNumbers: new Set<number>(data.player.markedNumbers) // Convert Array back to Set
+                  // Important: Restore Set from Array
+                  markedNumbers: new Set<number>(data.player.markedNumbers) 
               };
               
               const newState = {
@@ -224,16 +262,25 @@ const App: React.FC = () => {
               };
               
               // Sync everyone immediately
-              // We need to pass the newState because setGameState is async in React but we want to sync updated data
-              // But inside this callback, we need to be careful. 
-              // Better to use a timeout or invoke sync after state update effect? 
-              // Simplest here is to invoke sync with the calculated new state.
-              setTimeout(() => syncStateToGuests(newState), 100);
+              setTimeout(() => {
+                  const payload = {
+                    type: 'SYNC_STATE',
+                    state: {
+                        ...newState,
+                        players: newState.players.map(p => ({
+                        ...p,
+                        markedNumbers: Array.from(p.markedNumbers)
+                        }))
+                    }
+                  };
+                  connectionsRef.current.forEach(c => c.open && c.send(payload));
+              }, 50);
               
               return newState;
           });
-      } else if (data.type === 'MARK_UPDATE') {
-          // Guest marked a number, update host state to keep track
+      } 
+      else if (data.type === 'MARK_UPDATE') {
+          // Guest marked a number, Host updates truth
           setGameState(prev => {
              const newState = {
                  ...prev,
@@ -244,29 +291,60 @@ const App: React.FC = () => {
                      return p;
                  })
              };
-             // Optional: Sync back to everyone so they see progress? 
-             // Maybe too much traffic. Let's only sync major events or periodically.
+             // Optional: Sync back to ensure consistency? 
+             // Ideally yes, but to save bandwidth we can trust guests slightly or sync on next draw.
+             // Let's sync to ensure others see the progress (e.g. "X has 3 numbers")
+             // To avoid spam, maybe only sync if it's a winning move? 
+             // For now, let's NOT sync immediately on every mark to avoid stutter, 
+             // the numbers will sync on next draw call anyway.
              return newState;
           });
-      } else if (data.type === 'BINGO_CLAIM') {
-          // Guest claims win
-          const player = gameState.players.find(p => p.id === data.playerId);
-          if (player) {
-              const claimedMarked = new Set<number>(data.markedNumbers);
-              if (checkWin(player.ticket, claimedMarked)) {
-                  handleWin(player);
-              } else {
-                  // False claim
-                  // Could send a message back, but simple for now
-              }
-          }
+      } 
+      else if (data.type === 'BINGO_CLAIM') {
+          // Guest claims victory
+          setGameState(prev => {
+            const player = prev.players.find(p => p.id === data.playerId);
+            if (player) {
+                const claimedMarked = new Set<number>(data.markedNumbers);
+                // Verify against Host's called numbers logic could be added here for extra security
+                if (checkWin(player.ticket, claimedMarked)) {
+                    // It's a win!
+                    const newState = {
+                        ...prev,
+                        status: 'ended' as GameStatus,
+                        winner: player,
+                        mcCommentary: `CHÚC MỪNG! ${player.name} ĐÃ KINH RỒI!`,
+                    };
+                    
+                    // Broadcast win immediately
+                    setTimeout(() => {
+                         const payload = {
+                            type: 'SYNC_STATE',
+                            state: {
+                                ...newState,
+                                players: newState.players.map(p => ({
+                                ...p,
+                                markedNumbers: Array.from(p.markedNumbers)
+                                }))
+                            }
+                        };
+                        connectionsRef.current.forEach(c => c.open && c.send(payload));
+                    }, 0);
+                    
+                    // Stop game loop
+                    if (callIntervalRef.current) clearInterval(callIntervalRef.current);
+                    return newState;
+                }
+            }
+            return prev;
+          });
       }
   };
 
   const handleGuestReceivedData = (data: any) => {
       if (data.type === 'SYNC_STATE') {
           const remoteState = data.state;
-          // Hydrate the state (Arrays to Sets)
+          // Hydrate players: Convert Array back to Set
           const hydratedPlayers = remoteState.players.map((p: any) => ({
               ...p,
               markedNumbers: new Set<number>(p.markedNumbers)
@@ -275,16 +353,11 @@ const App: React.FC = () => {
           setGameState({
               ...remoteState,
               players: hydratedPlayers,
-              // Important: Keep my own ticket intact if needed, 
-              // but Host is authority, so we accept Host's ticket for us usually.
-              // In this logic, Host generated ticket for us on join (or we sent it).
-              // The sync should be correct.
           });
       }
   };
 
-
-  // --- Game Logic (Host Only) ---
+  // --- Game Loop (Host Only) ---
 
   const startGame = useCallback(() => {
     setGameState(prev => {
@@ -293,10 +366,21 @@ const App: React.FC = () => {
             status: 'playing' as GameStatus,
             mcCommentary: 'Trò chơi bắt đầu! Chuẩn bị dò số nào...',
         };
-        syncStateToGuests(newState);
+        // Use a direct payload construction to avoid closure staleness
+        const payload = {
+            type: 'SYNC_STATE',
+            state: {
+                ...newState,
+                players: newState.players.map(p => ({
+                    ...p,
+                    markedNumbers: Array.from(p.markedNumbers)
+                }))
+            }
+        };
+        connectionsRef.current.forEach(c => c.open && c.send(payload));
         return newState;
     });
-  }, [syncStateToGuests]);
+  }, []);
 
   const drawNumber = useCallback(async () => {
     setGameState(prev => {
@@ -315,16 +399,26 @@ const App: React.FC = () => {
         calledNumbers: [...prev.calledNumbers, nextNum],
       };
 
-      // Sync state immediately with number
-      syncStateToGuests(newState);
+      // Sync
+      const payload = {
+        type: 'SYNC_STATE',
+        state: {
+            ...newState,
+            players: newState.players.map(p => ({
+                ...p,
+                markedNumbers: Array.from(p.markedNumbers)
+            }))
+        }
+      };
+      connectionsRef.current.forEach(c => c.open && c.send(payload));
+      
       return newState;
     });
-  }, [syncStateToGuests]);
+  }, []);
 
-  // Host Loop
+  // Interval for drawing numbers (Host only)
   useEffect(() => {
     const me = gameState.players.find(p => p.id === playerId);
-    // Only Host runs the loop
     if (me?.isHost && gameState.status === 'playing' && !gameState.winner) {
       callIntervalRef.current = setInterval(() => {
         drawNumber();
@@ -335,7 +429,7 @@ const App: React.FC = () => {
     };
   }, [gameState.status, gameState.winner, gameState.players, playerId, drawNumber]);
 
-  // Generate Commentary (Host Only) and sync via state
+  // AI Commentary (Host only)
   useEffect(() => {
     const me = gameState.players.find(p => p.id === playerId);
     if (me?.isHost && gameState.currentNumber && gameState.status === 'playing') {
@@ -345,39 +439,48 @@ const App: React.FC = () => {
         
         setGameState(prev => {
             const newState = { ...prev, mcCommentary: text };
-            syncStateToGuests(newState);
+            // Sync commentary update
+            const payload = {
+                type: 'SYNC_STATE',
+                state: {
+                    ...newState,
+                    players: newState.players.map(p => ({
+                        ...p,
+                        markedNumbers: Array.from(p.markedNumbers)
+                    }))
+                }
+            };
+            connectionsRef.current.forEach(c => c.open && c.send(payload));
             return newState;
         });
         setMcLoading(false);
       };
       fetchCommentary();
     }
-  }, [gameState.currentNumber, gameState.status, playerId]); // removed gameState.players to avoid loop, checking inside
+  }, [gameState.currentNumber, gameState.status, playerId]);
 
 
-  // --- Player Actions ---
+  // --- User Interaction ---
 
   const handleMarkNumber = (num: number) => {
     if (gameState.status !== 'playing') return;
     
-    // Allow marking only if called
     if (!gameState.calledNumbers.includes(num)) {
       alert("Số này chưa được gọi!");
       return;
     }
 
-    // Update Local State
-    let newMarkedSet = new Set<number>();
-    
-    setGameState(prev => {
-      const me = prev.players.find(p => p.id === playerId);
-      if (!me) return prev;
-      
-      const newMarked = new Set(me.markedNumbers);
-      if (newMarked.has(num)) newMarked.delete(num);
-      else newMarked.add(num);
-      newMarkedSet = newMarked;
+    // Determine the player instance from the current state
+    const me = gameState.players.find(p => p.id === playerId);
+    if (!me) return;
 
+    // Optimistic Update: Calculate the new marked set based on the current state
+    // We calculate this outside setGameState so we can use it for the network call too
+    const newMarked = new Set<number>(me.markedNumbers);
+    if (newMarked.has(num)) newMarked.delete(num);
+    else newMarked.add(num);
+
+    setGameState(prev => {
       const updatedPlayers = prev.players.map(p => 
         p.id === playerId ? { ...p, markedNumbers: newMarked } : p
       );
@@ -388,13 +491,12 @@ const App: React.FC = () => {
       };
     });
 
-    // Notify Host (if Guest)
-    const me = gameState.players.find(p => p.id === playerId);
-    if (me && !me.isHost && hostConnRef.current) {
+    // Send update to Host
+    if (!me.isHost && hostConnRef.current) {
         hostConnRef.current.send({
             type: 'MARK_UPDATE',
             playerId: playerId,
-            markedNumbers: Array.from(newMarkedSet)
+            markedNumbers: Array.from(newMarked)
         });
     }
   };
@@ -405,9 +507,31 @@ const App: React.FC = () => {
 
     if (checkWin(me.ticket, me.markedNumbers)) {
         if (me.isHost) {
-            handleWin(me);
+            // Host wins locally
+             setGameState(prev => {
+                    const newState = {
+                        ...prev,
+                        status: 'ended' as GameStatus,
+                        winner: me,
+                        mcCommentary: `CHÚC MỪNG! ${me.name} ĐÃ KINH RỒI!`,
+                    };
+                    // Sync win
+                    const payload = {
+                        type: 'SYNC_STATE',
+                        state: {
+                            ...newState,
+                            players: newState.players.map(p => ({
+                                ...p,
+                                markedNumbers: Array.from(p.markedNumbers)
+                            }))
+                        }
+                    };
+                    connectionsRef.current.forEach(c => c.open && c.send(payload));
+                    if (callIntervalRef.current) clearInterval(callIntervalRef.current);
+                    return newState;
+            });
         } else {
-            // Send claim to host
+            // Guest sends claim
             if (hostConnRef.current) {
                 hostConnRef.current.send({
                     type: 'BINGO_CLAIM',
@@ -421,33 +545,11 @@ const App: React.FC = () => {
     }
   };
 
-  const handleWin = (winner: Player) => {
-    setGameState(prev => {
-        const newState = {
-            ...prev,
-            status: 'ended' as GameStatus,
-            winner: winner,
-            mcCommentary: `CHÚC MỪNG! ${winner.name} ĐÃ KINH RỒI!`,
-        };
-        // If I am host, sync this
-        if (prev.players.find(p => p.id === playerId)?.isHost) {
-             syncStateToGuests(newState);
-        }
-        return newState;
-    });
-    if (callIntervalRef.current) clearInterval(callIntervalRef.current);
-  };
-
   const resetGame = () => {
     const me = gameState.players.find(p => p.id === playerId);
     if (!me?.isHost) return;
 
     setGameState(prev => {
-        // Generate new tickets for everyone? 
-        // For simplicity in P2P, we might ask everyone to re-join or just reset board.
-        // Let's just reset numbers but keep tickets for now to avoid sync complexity of new tickets, 
-        // OR generate new ticket for Host and ask Guests to regen?
-        // Simplest: Reset board, keep tickets.
         const newState: RoomState = {
             ...prev,
             status: 'waiting',
@@ -460,12 +562,23 @@ const App: React.FC = () => {
                 markedNumbers: new Set()
             }))
         };
-        syncStateToGuests(newState);
+        
+        const payload = {
+            type: 'SYNC_STATE',
+            state: {
+                ...newState,
+                players: newState.players.map(p => ({
+                    ...p,
+                    markedNumbers: Array.from(p.markedNumbers)
+                }))
+            }
+        };
+        connectionsRef.current.forEach(c => c.open && c.send(payload));
         return newState;
     });
   };
 
-  // --- Render ---
+  // --- Rendering ---
 
   const me = gameState.players.find(p => p.id === playerId);
   const isHost = me?.isHost;
@@ -475,7 +588,7 @@ const App: React.FC = () => {
         <>
             <Lobby onCreateRoom={createRoom} onJoinRoom={joinRoom} isCreating={isConnecting} />
             {connectionError && (
-                <div className="fixed top-5 right-5 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded shadow-lg z-50">
+                <div className="fixed top-5 right-5 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded shadow-lg z-50 animate-bounce">
                     <strong className="font-bold">Lỗi: </strong>
                     <span className="block sm:inline">{connectionError}</span>
                 </div>
@@ -506,14 +619,17 @@ const App: React.FC = () => {
         {gameState.status === 'waiting' && (
           <div className="bg-white p-6 rounded-xl shadow-md text-center space-y-4">
             <h2 className="text-2xl font-bold text-gray-700">Phòng Chờ</h2>
-            <p className="text-gray-500">Mã phòng của bạn là: <span className="font-mono font-bold text-2xl text-red-600 select-all">{gameState.code}</span></p>
+            <div className="p-4 bg-gray-100 rounded-lg inline-block">
+                <p className="text-gray-500 mb-1">Mã Phòng:</p>
+                <p className="font-mono font-bold text-4xl text-red-600 tracking-wider select-all">{gameState.code}</p>
+            </div>
             
             <div className="flex flex-wrap justify-center gap-4 py-4">
               {gameState.players.map(p => (
-                <div key={p.id} className="flex items-center space-x-2 bg-gray-100 px-4 py-2 rounded-full border border-gray-200 animate-in fade-in zoom-in">
+                <div key={p.id} className="flex items-center space-x-2 bg-white border-2 border-green-100 px-4 py-2 rounded-full shadow-sm animate-in fade-in zoom-in">
                    <div className="w-3 h-3 rounded-full bg-green-500"></div>
-                   <span className="font-medium">{p.name}</span>
-                   {p.isHost && <span className="text-yellow-500">👑</span>}
+                   <span className="font-bold text-gray-700">{p.name}</span>
+                   {p.isHost && <span className="text-yellow-500" title="Chủ phòng">👑</span>}
                 </div>
               ))}
             </div>
@@ -525,13 +641,13 @@ const App: React.FC = () => {
                     disabled={gameState.players.length < 2}
                     className="bg-red-500 hover:bg-red-600 disabled:bg-gray-300 disabled:text-gray-500 text-white font-bold py-3 px-12 rounded-full shadow-lg transform transition hover:scale-105 active:scale-95 disabled:scale-100 disabled:cursor-not-allowed flex items-center gap-2"
                   >
-                    {gameState.players.length < 2 ? 'Đợi thêm người chơi...' : <><Play size={20}/> BẮT ĐẦU</>}
+                    {gameState.players.length < 2 ? 'Đợi người chơi khác...' : <><Play size={20}/> BẮT ĐẦU</>}
                   </button>
               </div>
             ) : (
                 <div className="flex flex-col items-center gap-2 text-gray-500 italic mt-4">
-                    <Loader2 className="animate-spin text-red-500" />
-                    Đang chờ chủ phòng bắt đầu...
+                    <Loader2 className="animate-spin text-red-500 w-8 h-8" />
+                    <p>Đang chờ chủ phòng bắt đầu...</p>
                </div>
             )}
           </div>
@@ -548,17 +664,21 @@ const App: React.FC = () => {
                  <span>MC Gemini</span>
               </div>
               
-              <div className="min-h-[60px] flex items-center justify-center">
+              <div className="min-h-[80px] flex items-center justify-center px-4">
                  {mcLoading ? (
-                    <span className="text-gray-400 italic">Đang suy nghĩ câu vè...</span>
+                    <span className="text-gray-400 italic flex items-center gap-2">
+                        <Loader2 className="animate-spin w-4 h-4" /> Đang nghĩ câu vè...
+                    </span>
                  ) : (
-                    <p className="text-xl md:text-2xl text-gray-800 font-serif italic">"{gameState.mcCommentary}"</p>
+                    <p className="text-xl md:text-2xl text-gray-800 font-serif italic leading-relaxed">
+                        "{gameState.mcCommentary}"
+                    </p>
                  )}
               </div>
 
               {gameState.currentNumber && (
-                <div className="mt-4">
-                  <div className="inline-flex items-center justify-center w-24 h-24 bg-red-600 text-white text-5xl font-extrabold rounded-full shadow-xl border-4 border-yellow-400 animate-bounce">
+                <div className="mt-6 mb-2">
+                  <div className="inline-flex items-center justify-center w-28 h-28 bg-red-600 text-white text-6xl font-extrabold rounded-full shadow-xl border-4 border-yellow-400 animate-bounce">
                     {gameState.currentNumber}
                   </div>
                 </div>
@@ -571,9 +691,9 @@ const App: React.FC = () => {
               <div className="lg:col-span-2 space-y-6">
                   <div className="space-y-2">
                     <div className="flex justify-between items-center px-1">
-                        <h3 className="font-bold text-lg flex items-center gap-2">
-                            <UserCircle2 className="w-5 h-5" /> 
-                            Vé của bạn ({me?.name})
+                        <h3 className="font-bold text-lg flex items-center gap-2 text-gray-800">
+                            <UserCircle2 className="w-6 h-6 text-red-500" /> 
+                            Vé Loto Của Bạn ({me?.name})
                         </h3>
                     </div>
                     {me && (
@@ -588,8 +708,9 @@ const App: React.FC = () => {
                     {gameState.status === 'playing' && (
                         <button
                             onClick={handleKinhCall}
-                            className="w-full mt-4 bg-yellow-400 hover:bg-yellow-500 text-red-800 font-black text-xl py-4 rounded-xl shadow-lg border-b-4 border-yellow-600 active:border-b-0 active:translate-y-1 transition-all uppercase tracking-widest"
+                            className="w-full mt-6 bg-yellow-400 hover:bg-yellow-500 text-red-900 font-black text-2xl py-4 rounded-xl shadow-lg border-b-8 border-yellow-600 active:border-b-0 active:translate-y-2 transition-all uppercase tracking-widest flex items-center justify-center gap-2"
                         >
+                            <Trophy className="w-8 h-8" />
                             KINH RỒI! (BINGO)
                         </button>
                     )}
@@ -609,14 +730,19 @@ const App: React.FC = () => {
                         {gameState.players.map(p => {
                              const markedCount = p.markedNumbers.size;
                              return (
-                                <div key={p.id} className={`flex items-center justify-between p-2 rounded-lg text-sm ${p.id === playerId ? 'bg-yellow-50 border border-yellow-200' : 'bg-gray-50'}`}>
-                                    <div className="flex items-center gap-2">
-                                        <div className="w-2 h-2 rounded-full bg-green-500"></div>
-                                        <span className={`font-medium ${p.id === playerId ? 'text-gray-900' : 'text-gray-600'}`}>
-                                            {p.name} {p.isHost && '👑'}
-                                        </span>
+                                <div key={p.id} className={`flex items-center justify-between p-3 rounded-lg text-sm transition-colors ${p.id === playerId ? 'bg-yellow-50 border border-yellow-200' : 'bg-gray-50'}`}>
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-green-400 to-green-600 flex items-center justify-center text-white font-bold shadow-sm">
+                                            {p.name.charAt(0).toUpperCase()}
+                                        </div>
+                                        <div className="flex flex-col">
+                                            <span className={`font-bold ${p.id === playerId ? 'text-gray-900' : 'text-gray-600'}`}>
+                                                {p.name}
+                                            </span>
+                                            {p.isHost && <span className="text-xs text-yellow-600 font-semibold">Chủ phòng</span>}
+                                        </div>
                                     </div>
-                                    <div className="text-gray-400 text-xs">
+                                    <div className="text-gray-500 font-mono bg-white px-2 py-1 rounded border border-gray-200 text-xs">
                                         {markedCount} số
                                     </div>
                                 </div>
@@ -630,25 +756,30 @@ const App: React.FC = () => {
             
             {/* Winner Overlay */}
             {gameState.status === 'ended' && gameState.winner && (
-              <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4 animate-in fade-in duration-300">
-                <div className="bg-white rounded-3xl p-8 max-w-sm w-full text-center shadow-2xl scale-100 animate-in zoom-in-95 duration-300">
-                  <div className="w-20 h-20 bg-yellow-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <Trophy className="w-10 h-10 text-yellow-600" />
+              <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4 animate-in fade-in duration-300 backdrop-blur-sm">
+                <div className="bg-white rounded-3xl p-8 max-w-sm w-full text-center shadow-2xl scale-100 animate-in zoom-in-95 duration-300 border-4 border-yellow-400">
+                  <div className="w-24 h-24 bg-yellow-100 rounded-full flex items-center justify-center mx-auto mb-6 animate-bounce">
+                    <Trophy className="w-12 h-12 text-yellow-600" />
                   </div>
-                  <h2 className="text-3xl font-bold text-gray-900 mb-2">CHIẾN THẮNG!</h2>
-                  <p className="text-gray-600 text-lg mb-6">
-                    Người chiến thắng là <span className="font-bold text-red-600">{gameState.winner.name}</span>
+                  <h2 className="text-4xl font-extrabold text-red-600 mb-2 uppercase tracking-wide">Chiến Thắng!</h2>
+                  <p className="text-gray-600 text-lg mb-8">
+                    Chúc mừng <span className="font-bold text-gray-900 text-xl">{gameState.winner.name}</span> đã Kinh!
                   </p>
                   
-                  {isHost && (
+                  {isHost ? (
                       <button 
                         onClick={resetGame}
-                        className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-xl transition-colors"
+                        className="w-full bg-gradient-to-r from-red-600 to-red-500 hover:from-red-700 hover:to-red-600 text-white font-bold py-4 rounded-xl shadow-lg transition-transform hover:scale-105 active:scale-95 flex items-center justify-center gap-2"
                       >
-                        Chơi ván mới
+                        <RefreshCw className="w-5 h-5" />
+                        Chơi Ván Mới
                       </button>
+                  ) : (
+                      <div className="flex items-center justify-center gap-2 text-gray-500">
+                          <Loader2 className="animate-spin w-4 h-4" />
+                          <span>Chờ chủ phòng bắt đầu lại...</span>
+                      </div>
                   )}
-                  {!isHost && <p>Chờ chủ phòng bắt đầu lại...</p>}
                 </div>
               </div>
             )}
