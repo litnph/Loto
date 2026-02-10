@@ -5,6 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Loto Vui</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      // Suppress the Tailwind CDN warning in production to keep console clean
+      // This is safe for this specific deployment type
+      const originalWarn = console.warn;
+      console.warn = (...args) => {
+        if (args[0] && typeof args[0] === 'string' && args[0].includes('cdn.tailwindcss.com')) return;
+        originalWarn.apply(console, args);
+      };
+    </script>
     <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
     <style>
       body {
@@ -34,5 +43,6 @@
 </head>
   <body>
     <div id="root"></div>
+    <script type="module" src="./index.tsx"></script>
   </body>
 </html>
