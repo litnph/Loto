@@ -10,18 +10,35 @@ import Peer, { DataConnection } from 'peerjs';
 
 const ROOM_PREFIX = 'loto-vui-vn-v2-';
 
-// Cấu hình máy chủ STUN để hỗ trợ kết nối xuyên mạng (Wifi khác nhau/4G)
+// Cấu hình ICE Servers MẠNH MẼ HƠN
+// Bao gồm STUN (Google) để tìm IP
+// VÀ TURN (OpenRelay) để relay dữ liệu khi 2 bên không thấy nhau trực tiếp (Fix lỗi 4G/Wifi khác mạng)
 const PEER_CONFIG = {
-  debug: 1,
+  debug: 2, // Tăng log để dễ debug
   config: {
     iceServers: [
+      // 1. Google STUN (Cơ bản)
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' },
-      { urls: 'stun:stun3.l.google.com:19302' },
-      { urls: 'stun:stun4.l.google.com:19302' },
-      { urls: 'stun:global.stun.twilio.com:3478' }
+      
+      // 2. OpenRelay Free TURN (Quan trọng cho xuyên mạng 4G/Wifi)
+      {
+        urls: "turn:openrelay.metered.ca:80",
+        username: "openrelayproject",
+        credential: "openrelayproject",
+      },
+      {
+        urls: "turn:openrelay.metered.ca:443",
+        username: "openrelayproject",
+        credential: "openrelayproject",
+      },
+      {
+        urls: "turn:openrelay.metered.ca:443?transport=tcp",
+        username: "openrelayproject",
+        credential: "openrelayproject",
+      },
     ],
+    iceTransportPolicy: 'all' as RTCIceTransportPolicy, // Thử mọi cách kết nối
   },
 };
 
@@ -81,13 +98,15 @@ const App: React.FC = () => {
     setIsConnecting(true);
     setConnectionError('');
     
+    // Tạo mã phòng
     const shortCode = Math.random().toString(36).substring(2, 7).toUpperCase();
     const fullRoomId = ROOM_PREFIX + shortCode;
 
-    // Áp dụng cấu hình STUN servers cho Host
+    // Khởi tạo Host Peer
     const peer = new Peer(fullRoomId, PEER_CONFIG);
 
     peer.on('open', (id) => {
+      console.log('Host ID:', id);
       const myTicket = generateTicket();
       const hostPlayer: Player = {
         id: id,
@@ -113,6 +132,7 @@ const App: React.FC = () => {
     });
 
     peer.on('connection', (conn) => {
+      console.log('Guest connected:', conn.peer);
       conn.on('data', (data: any) => {
         handleHostReceivedData(data, conn);
       });
@@ -126,6 +146,7 @@ const App: React.FC = () => {
          setGameState(prev => {
             const updatedPlayers = prev.players.filter(p => p.peerId !== conn.peer);
             const newState = { ...prev, players: updatedPlayers };
+            // Sync lại cho những người còn lại
             setTimeout(() => {
                 const payload = {
                     type: 'SYNC_STATE',
@@ -145,11 +166,14 @@ const App: React.FC = () => {
     });
 
     peer.on('error', (err) => {
+      console.error("Host Error:", err);
       setIsConnecting(false);
       if (err.type === 'unavailable-id') {
          setConnectionError('Mã phòng bị trùng. Vui lòng thử lại.');
       } else if (err.type === 'network' || err.type === 'disconnected') {
          setConnectionError('Lỗi mạng. Vui lòng kiểm tra kết nối internet.');
+      } else if (err.type === 'server-error') {
+         setConnectionError('Không thể kết nối máy chủ PeerJS.');
       } else {
          setConnectionError(`Lỗi tạo phòng: ${err.type}`);
       }
@@ -162,23 +186,31 @@ const App: React.FC = () => {
     setConnectionError('');
     const fullRoomId = ROOM_PREFIX + roomCode.toUpperCase();
     
-    // Áp dụng cấu hình STUN servers cho Guest
+    // Khởi tạo Guest Peer
     const peer = new Peer(PEER_CONFIG);
 
+    // Timeout kết nối (15s vì TURN relay có thể chậm hơn chút)
     const connectionTimeout = setTimeout(() => {
         if (isConnecting) {
-            setConnectionError("Không thể kết nối tới phòng. Có thể do mạng chặn hoặc sai mã phòng.");
+            setConnectionError("Kết nối quá lâu. Có thể do tường lửa chặn hoặc sai mã phòng. Hãy thử lại.");
             setIsConnecting(false);
-            peer.destroy();
+            if (peerRef.current) peerRef.current.destroy();
         }
-    }, 10000); // Tăng thời gian chờ lên 10s cho mạng chậm
+    }, 15000);
 
     peer.on('open', (id) => {
+      console.log('My Guest ID:', id);
       setPlayerId(id);
-      const conn = peer.connect(fullRoomId, { reliable: true });
+      
+      // Bắt đầu kết nối tới Host
+      const conn = peer.connect(fullRoomId, { 
+          reliable: true,
+          // serialization: 'json' // Mặc định là binary/json
+      });
 
       conn.on('open', () => {
         clearTimeout(connectionTimeout);
+        console.log("Connected to Host via PeerJS");
         setIsConnecting(false);
         hostConnRef.current = conn;
 
@@ -199,14 +231,20 @@ const App: React.FC = () => {
       });
 
       conn.on('data', (data: any) => handleGuestReceivedData(data));
+      
       conn.on('close', () => {
         alert("Kết nối với chủ phòng bị ngắt!");
         window.location.reload();
+      });
+
+      conn.on('error', (err) => {
+          console.error("Connection Error:", err);
       });
     });
 
     peer.on('error', (err) => {
         clearTimeout(connectionTimeout);
+        console.error("Guest Peer Error:", err);
         setIsConnecting(false);
         setConnectionError('Lỗi kết nối máy chủ Peer. Hãy thử tải lại trang.');
     });
