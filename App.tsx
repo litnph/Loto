@@ -757,14 +757,16 @@ const App: React.FC = () => {
       return newState;
     });
 
-    // 3. Send MQTT update (Fire and Forget)
+    // 3. Send MQTT update ONLY if waiting status CHANGED
     if (!me.isHost && clientRef.current) {
-        clientRef.current.publish(getClientTopic(currentGameState.code), JSON.stringify({
-            type: 'MARK_UPDATE',
-            playerId: myPId,
-            markedNumbers: Array.from(newMarked),
-            isWaiting: isWaiting
-        }));
+        if (me.isWaiting !== isWaiting) {
+             clientRef.current.publish(getClientTopic(currentGameState.code), JSON.stringify({
+                type: 'MARK_UPDATE',
+                playerId: myPId,
+                markedNumbers: Array.from(newMarked),
+                isWaiting: isWaiting
+            }));
+        }
     }
   }, []); // Empty dependency array = stable function reference for Ticket memo
 
@@ -1201,6 +1203,27 @@ const App: React.FC = () => {
                             {gameState.currentNumber}
                         </div>
                     )}
+                    
+                    {gameState.calledNumbers.length > 1 && (
+                         <div style={{marginTop: '1rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.25rem'}}>
+                             <span style={{fontSize: '0.75rem', color: '#9ca3af', fontWeight: 'bold', textTransform: 'uppercase'}}>Vừa qua</span>
+                             <div style={{display: 'flex', gap: '0.5rem'}}>
+                                 {gameState.calledNumbers.slice(0, -1).slice(-5).reverse().map((num, i) => (
+                                     <div key={i} style={{
+                                         width: '2rem', height: '2rem', 
+                                         borderRadius: '50%', 
+                                         background: 'rgba(255,255,255,0.6)', 
+                                         border: '1px solid #d1d5db',
+                                         display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                         fontWeight: 'bold', color: '#6b7280',
+                                         fontSize: '0.9rem'
+                                     }}>
+                                         {num}
+                                     </div>
+                                 ))}
+                             </div>
+                         </div>
+                    )}
                 </div>
 
                 {/* Player List */}
@@ -1232,9 +1255,6 @@ const App: React.FC = () => {
                                         ) : (
                                             <>
                                             {p.isWaiting && <div className="badge-waiting"><Flame size={12} fill="#d97706" /> CHỜ</div>}
-                                            <div style={{fontSize: '0.75rem', padding: '2px 6px', background: 'white', border: '1px solid #e5e7eb', borderRadius: '4px'}}>
-                                                {markedCount} số
-                                            </div>
                                             </>
                                         )}
                                     </div>
@@ -1306,32 +1326,65 @@ const App: React.FC = () => {
         {/* Rename Modal */}
         {isRenameModalOpen && (
             <div className="overlay">
-                <div className="modal" style={{maxWidth: '24rem', padding: '1.5rem'}}>
-                    <div className="flex justify-between items-center mb-4">
-                        <h3 className="text-lg font-bold">Đổi Tên Người Chơi</h3>
-                        <button className="btn-close" onClick={() => setIsRenameModalOpen(false)}><X size={20} /></button>
+                <div className="modal animate-in fade-in zoom-in" style={{maxWidth: '28rem', padding: '0', overflow: 'hidden', border: 'none', borderRadius: '1rem'}}>
+                    {/* Header */}
+                    <div style={{background: 'var(--primary)', color: 'white', padding: '1.25rem 1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'}}>
+                         <div style={{display: 'flex', alignItems: 'center', gap: '0.75rem'}}>
+                            <div style={{background: 'rgba(255,255,255,0.2)', padding: '0.5rem', borderRadius: '50%', display: 'flex'}}>
+                                <UserCircle2 size={24} color="white" />
+                            </div>
+                            <h3 className="text-lg font-extrabold" style={{margin: 0, letterSpacing: '0.025em'}}>CẬP NHẬT HỒ SƠ</h3>
+                         </div>
+                         <button onClick={() => setIsRenameModalOpen(false)} style={{background: 'transparent', border: 'none', color: 'white', cursor: 'pointer', opacity: 0.8, transition: 'opacity 0.2s', padding: '0.25rem', display: 'flex'}} className="hover:opacity-100">
+                            <X size={24} />
+                         </button>
                     </div>
-                    <form onSubmit={handleRenameSubmit}>
-                        <div className="mb-4">
-                            <label className="block text-sm font-medium mb-1">Tên hiển thị mới</label>
-                            <input 
-                                type="text"
-                                className="form-input"
-                                value={renameValue}
-                                onChange={(e) => setRenameValue(e.target.value)}
-                                autoFocus
-                                maxLength={20}
-                            />
-                        </div>
-                        <div className="flex gap-2 justify-end">
-                            <button type="button" onClick={() => setIsRenameModalOpen(false)} className="btn bg-gray-200">
-                                Hủy
-                            </button>
-                            <button type="submit" disabled={!renameValue.trim()} className="btn btn-primary">
-                                <Save size={18} /> Lưu Thay Đổi
-                            </button>
-                        </div>
-                    </form>
+                    
+                    {/* Body */}
+                    <div style={{padding: '2rem'}}>
+                        <form onSubmit={handleRenameSubmit}>
+                            <div className="mb-4">
+                                <label className="block text-sm font-bold text-muted mb-2" style={{textTransform: 'uppercase', letterSpacing: '0.05em'}}>Tên hiển thị mới</label>
+                                <div className="input-wrapper" style={{position: 'relative'}}>
+                                    <input 
+                                        type="text"
+                                        className="form-input"
+                                        value={renameValue}
+                                        onChange={(e) => setRenameValue(e.target.value)}
+                                        autoFocus
+                                        maxLength={20}
+                                        placeholder="Nhập tên của bạn..."
+                                        style={{
+                                            fontSize: '1.1rem', 
+                                            padding: '1rem 1rem 1rem 3rem',
+                                            width: '100%',
+                                            border: '2px solid #e5e7eb',
+                                            borderRadius: '0.75rem',
+                                            outline: 'none',
+                                            transition: 'all 0.2s'
+                                        }}
+                                        onFocus={(e) => e.target.style.borderColor = 'var(--primary)'}
+                                        onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
+                                    />
+                                    <div style={{position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', color: '#9ca3af', pointerEvents: 'none'}}>
+                                        <Pencil size={20} />
+                                    </div>
+                                </div>
+                                <p style={{fontSize: '0.8rem', color: '#6b7280', marginTop: '0.75rem', display: 'flex', gap: '0.25rem'}}>
+                                    <span style={{color: 'var(--primary)'}}>*</span> Tên này sẽ hiển thị trên bảng xếp hạng và vé của bạn.
+                                </p>
+                            </div>
+                            
+                            <div className="flex gap-3 justify-end mt-8">
+                                <button type="button" onClick={() => setIsRenameModalOpen(false)} className="btn" style={{background: '#f3f4f6', color: '#4b5563', border: '1px solid #e5e7eb'}}>
+                                    Hủy Bỏ
+                                </button>
+                                <button type="submit" disabled={!renameValue.trim()} className="btn btn-primary" style={{flex: 1, boxShadow: '0 4px 6px -1px rgba(220, 38, 38, 0.3)'}}>
+                                    <Save size={20} /> Lưu Thay Đổi
+                                </button>
+                            </div>
+                        </form>
+                    </div>
                 </div>
             </div>
         )}
