@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { MessageCircle, Send, X, Minus, ChevronDown } from 'lucide-react';
+import { MessageCircle, Send, X, Minus, Phone, Video, Image, Smile, Mic, PlusCircle, ThumbsUp } from 'lucide-react';
 import { ChatMessage } from '../types';
 
 interface ChatBoxProps {
@@ -23,23 +23,20 @@ const ChatBox: React.FC<ChatBoxProps> = ({ messages, currentPlayerId, onSendMess
   useEffect(() => {
     if (isOpen) {
       scrollToBottom();
-      // Auto focus input when opening
       setTimeout(() => inputRef.current?.focus(), 100);
     }
   }, [messages, isOpen]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    e.stopPropagation(); // Stop event bubbling
     if (inputText.trim()) {
       onSendMessage(inputText.trim());
       setInputText('');
-      // Keep focus after sending
       setTimeout(() => inputRef.current?.focus(), 10);
     }
   };
 
-  // Generate a consistent color for avatars based on name
+  // Avatar color generator
   const getAvatarColor = (name: string) => {
     const colors = ['#ef4444', '#f97316', '#f59e0b', '#84cc16', '#10b981', '#06b6d4', '#3b82f6', '#6366f1', '#8b5cf6', '#d946ef', '#f43f5e'];
     let hash = 0;
@@ -49,196 +46,405 @@ const ChatBox: React.FC<ChatBoxProps> = ({ messages, currentPlayerId, onSendMess
     return colors[Math.abs(hash) % colors.length];
   };
 
+  // Render Floating Button if Closed
   if (!isOpen) {
     return (
-      <button 
-        onClick={() => setIsOpen(true)}
-        className={`fixed bottom-6 right-6 flex items-center justify-center rounded-full shadow-xl transition-all hover:scale-110 active:scale-95 ${unreadCount > 0 ? 'animate-bounce-slight' : ''}`}
-        style={{
-            width: '3.5rem', 
-            height: '3.5rem', 
-            background: 'linear-gradient(135deg, #2563eb, #1d4ed8)', 
-            color: 'white',
-            border: '2px solid white',
-            zIndex: 9999 // Always on top
-        }}
-      >
-        <MessageCircle size={28} />
+      <div className="chat-floating-btn" onClick={() => setIsOpen(true)}>
+        <MessageCircle size={24} />
         {unreadCount > 0 && (
-          <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white shadow-sm border-2 border-white">
+          <div className="chat-unread-badge">
             {unreadCount > 9 ? '9+' : unreadCount}
-          </span>
+          </div>
         )}
-      </button>
+        <style>{`
+          .chat-floating-btn {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 50px;
+            height: 50px;
+            background-color: white;
+            border-radius: 50%;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            z-index: 10000;
+            transition: transform 0.2s;
+            color: #0084ff; /* Messenger Blue Icon */
+          }
+          .chat-floating-btn:hover {
+            transform: scale(1.1);
+            background-color: #f9f9f9;
+          }
+          .chat-unread-badge {
+            position: absolute;
+            top: -5px;
+            right: -5px;
+            background-color: #fa3e3e;
+            color: white;
+            font-size: 11px;
+            font-weight: bold;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 2px solid white;
+          }
+        `}</style>
+      </div>
     );
   }
 
+  // Render Chat Window
   return (
-    <div className="chat-window-container" onClick={(e) => e.stopPropagation()}>
-      {/* Header */}
-      <div 
-        className="chat-header"
-        onClick={() => setIsOpen(false)}
-      >
-        <div className="flex items-center gap-2">
-            <div className="relative">
-                <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center">
-                    <MessageCircle size={18} className="text-white" />
-                </div>
-                <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-400 border-2 border-blue-600 rounded-full"></div>
-            </div>
-            <div className="flex flex-col">
-                <span className="font-bold text-white text-sm leading-tight">Phòng Chat</span>
-                <span className="text-blue-100 text-xs leading-tight">Đang hoạt động</span>
-            </div>
+    <div className="chat-window">
+      
+      {/* 1. Header */}
+      <div className="chat-header">
+        <div className="chat-header-user">
+          <div className="chat-header-avatar">
+            <MessageCircle size={18} color="white" />
+            <div className="status-dot"></div>
+          </div>
+          <div className="chat-header-info">
+            <span className="name">Phòng Chat Lô Tô</span>
+            <span className="status">Đang hoạt động</span>
+          </div>
         </div>
-        <div className="flex items-center gap-1">
-            <button className="p-1 hover:bg-white/10 rounded-full text-white/80 hover:text-white transition-colors">
-                <Minus size={20} />
-            </button>
+        <div className="chat-header-actions">
+          <Phone size={20} className="header-icon" />
+          <Video size={20} className="header-icon" />
+          <Minus size={20} className="header-icon" onClick={(e) => { e.stopPropagation(); setIsOpen(false); }} />
+          <X size={20} className="header-icon" onClick={(e) => { e.stopPropagation(); setIsOpen(false); }} />
         </div>
       </div>
 
-      {/* Messages Area */}
+      {/* 2. Messages Body */}
       <div className="chat-body custom-scrollbar">
-        <div className="flex flex-col gap-1 p-3">
-            <div className="text-center text-xs text-gray-400 my-2 italic select-none">
-                Bắt đầu cuộc trò chuyện
-            </div>
-            
-            {messages.map((msg, index) => {
-                const isMe = msg.playerId === currentPlayerId;
-                const isSystem = msg.isSystem;
-                
-                // Check if previous message was from same user to group bubbles
-                const isSequence = index > 0 && messages[index - 1].playerId === msg.playerId;
-
-                if (isSystem) {
-                    return (
-                        <div key={msg.id} className="flex justify-center my-2">
-                            <span className="bg-gray-100 text-gray-500 text-xs px-3 py-1 rounded-full shadow-sm border border-gray-200">
-                                {msg.playerName} {msg.text}
-                            </span>
-                        </div>
-                    )
-                }
-
-                return (
-                <div key={msg.id} className={`flex w-full ${isMe ? 'justify-end' : 'justify-start'} ${isSequence ? 'mt-0.5' : 'mt-2'}`}>
-                    
-                    {!isMe && !isSequence && (
-                        <div 
-                            className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold mr-2 shadow-sm shrink-0 select-none"
-                            style={{background: getAvatarColor(msg.playerName)}}
-                        >
-                            {msg.playerName.charAt(0).toUpperCase()}
-                        </div>
-                    )}
-                    {!isMe && isSequence && <div className="w-8 mr-2 shrink-0"></div>}
-
-                    <div className={`flex flex-col max-w-[75%] ${isMe ? 'items-end' : 'items-start'}`}>
-                        {!isMe && !isSequence && (
-                            <span className="text-[10px] text-gray-500 ml-1 mb-0.5 max-w-full truncate">
-                                {msg.playerName}
-                            </span>
-                        )}
-                        
-                        <div 
-                            className={`px-3 py-2 text-sm break-words shadow-sm relative group
-                                ${isMe 
-                                    ? 'bg-blue-600 text-white rounded-2xl rounded-tr-sm' 
-                                    : 'bg-gray-100 text-gray-800 rounded-2xl rounded-tl-sm'
-                                }`}
-                            title={new Date(msg.timestamp).toLocaleTimeString()}
-                        >
-                            {msg.text}
-                        </div>
-                    </div>
-                </div>
-                );
-            })}
-            <div ref={messagesEndRef} />
+        <div className="chat-intro">
+           <div className="intro-avatar">
+              <MessageCircle size={32} />
+           </div>
+           <h3>Loto Vui Online</h3>
+           <p>Chào mừng bạn đến với phòng chat!</p>
         </div>
+
+        {messages.map((msg, index) => {
+          const isMe = msg.playerId === currentPlayerId;
+          const isSystem = msg.isSystem;
+          const isLastFromUser = index === messages.length - 1 || messages[index + 1]?.playerId !== msg.playerId;
+          
+          if (isSystem) {
+             return (
+               <div key={msg.id} className="msg-system">
+                 <span>{msg.playerName} {msg.text}</span>
+               </div>
+             );
+          }
+
+          return (
+            <div key={msg.id} className={`msg-row ${isMe ? 'msg-me' : 'msg-other'}`}>
+               {!isMe && (
+                 <div className="msg-avatar" style={{visibility: isLastFromUser ? 'visible' : 'hidden'}}>
+                    {/* Simplified avatar circle */}
+                    <div className="avatar-circle" style={{background: getAvatarColor(msg.playerName)}}>
+                      {msg.playerName.charAt(0).toUpperCase()}
+                    </div>
+                 </div>
+               )}
+               
+               <div className="msg-content">
+                  {!isMe && isLastFromUser && <span className="msg-name">{msg.playerName}</span>}
+                  <div className="msg-bubble" title={new Date(msg.timestamp).toLocaleTimeString()}>
+                    {msg.text}
+                  </div>
+               </div>
+            </div>
+          );
+        })}
+        <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Area */}
+      {/* 3. Footer (Input) */}
       <div className="chat-footer">
-          <form onSubmit={handleSubmit} className="relative w-full">
-            <input
-                ref={inputRef}
-                type="text"
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                placeholder="Nhập tin nhắn..."
-                className="w-full bg-gray-100 rounded-full py-3 pl-4 pr-12 outline-none text-sm text-gray-800 placeholder-gray-400 border border-transparent focus:border-blue-300 focus:bg-white focus:ring-2 focus:ring-blue-100 transition-all"
-                maxLength={100}
-            />
-            <button 
-                type="submit" 
-                disabled={!inputText.trim()}
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-2 rounded-full bg-blue-600 text-white hover:bg-blue-700 transition-all disabled:opacity-0 disabled:scale-0 transform duration-200 shadow-sm"
-            >
-                <Send size={16} fill="currentColor" />
-            </button>
-          </form>
+        <div className="footer-actions">
+           <PlusCircle size={20} className="footer-icon" />
+           <Image size={20} className="footer-icon" />
+           <div className="footer-icon-group">
+             <Smile size={20} className="footer-icon" />
+             <div className="gif-badge">GIF</div>
+           </div>
+        </div>
+        
+        <form onSubmit={handleSubmit} className="input-container">
+           <input 
+             ref={inputRef}
+             type="text" 
+             placeholder="Aa" 
+             value={inputText}
+             onChange={(e) => setInputText(e.target.value)}
+           />
+           <div className="input-smiley">
+              <Smile size={20} color="#65676b" />
+           </div>
+        </form>
+
+        <div className="send-action" onClick={handleSubmit}>
+           {inputText.trim() ? (
+             <Send size={20} color="#0084ff" style={{marginLeft: '8px', cursor: 'pointer'}} />
+           ) : (
+             <ThumbsUp size={20} color="#0084ff" style={{marginLeft: '8px', cursor: 'pointer'}} />
+           )}
+        </div>
       </div>
 
       <style>{`
-        .chat-window-container {
-            position: fixed;
-            bottom: 0;
-            right: 1.5rem;
-            z-index: 9999; /* Always on top */
-            width: 340px;
-            max-width: calc(100vw - 3rem);
-            height: 480px;
-            max-height: 80vh;
-            background: white;
-            border-top-left-radius: 1rem;
-            border-top-right-radius: 1rem;
-            box-shadow: 0 4px 25px rgba(0,0,0,0.2);
-            display: flex;
-            flex-direction: column;
-            animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-            overflow: hidden;
-            border: 1px solid rgba(0,0,0,0.1);
-        }
-
-        .chat-header {
-            background: #2563eb; /* Blue 600 */
-            padding: 0.75rem 1rem;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            cursor: pointer;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
-        }
-
-        .chat-body {
-            flex: 1;
-            overflow-y: auto;
-            background-color: white;
-            overscroll-behavior: contain;
-        }
-
-        .chat-footer {
-            padding: 0.75rem;
-            background: white;
-            border-top: 1px solid #f3f4f6;
-        }
-
-        @keyframes slideUp {
-            from { transform: translateY(100%); opacity: 0; }
-            to { transform: translateY(0); opacity: 1; }
+        .chat-window {
+          position: fixed;
+          bottom: 0;
+          right: 80px; /* Shifted left of the FAB area usually, but here replacing it mostly */
+          width: 338px;
+          height: 455px;
+          background: white;
+          border-radius: 8px 8px 0 0;
+          box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+          z-index: 10000;
+          display: flex;
+          flex-direction: column;
+          font-family: Helvetica, Arial, sans-serif;
+          overflow: hidden;
         }
         
-        @keyframes bounce-slight {
-            0%, 100% { transform: scale(1); }
-            50% { transform: scale(1.1); }
+        /* HEADER */
+        .chat-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 8px 12px;
+          background: white;
+          border-bottom: 1px solid #e5e5e5;
+          box-shadow: 0 1px 2px rgba(0,0,0,0.05);
         }
-        .animate-bounce-slight {
-            animation: bounce-slight 2s infinite;
+        .chat-header-user {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          cursor: pointer;
         }
+        .chat-header-avatar {
+          width: 32px;
+          height: 32px;
+          background: #0084ff; /* Brand color */
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          position: relative;
+        }
+        .status-dot {
+          position: absolute;
+          bottom: 0;
+          right: 0;
+          width: 10px;
+          height: 10px;
+          background: #31a24c;
+          border: 2px solid white;
+          border-radius: 50%;
+        }
+        .chat-header-info {
+          display: flex;
+          flex-direction: column;
+        }
+        .chat-header-info .name {
+          font-weight: bold;
+          font-size: 14px;
+          color: #050505;
+        }
+        .chat-header-info .status {
+          font-size: 12px;
+          color: #65676b;
+        }
+        .chat-header-actions {
+          display: flex;
+          gap: 12px;
+        }
+        .header-icon {
+          color: #0084ff; /* Messenger Purple/Blue */
+          cursor: pointer;
+        }
+        .header-icon:hover {
+          opacity: 0.8;
+        }
+
+        /* BODY */
+        .chat-body {
+          flex: 1;
+          background: white;
+          overflow-y: auto;
+          padding: 10px;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+        .chat-intro {
+           text-align: center;
+           margin-top: 20px;
+           margin-bottom: 40px;
+           color: #65676b;
+        }
+        .intro-avatar {
+           width: 60px;
+           height: 60px;
+           margin: 0 auto 10px auto;
+           border-radius: 50%;
+           background: #f0f2f5;
+           display: flex;
+           align-items: center;
+           justify-content: center;
+        }
+
+        /* MESSAGES */
+        .msg-row {
+          display: flex;
+          margin-bottom: 2px;
+          align-items: flex-end;
+        }
+        .msg-me {
+          justify-content: flex-end;
+        }
+        .msg-other {
+          justify-content: flex-start;
+        }
+        
+        .msg-avatar {
+          width: 28px;
+          height: 28px;
+          margin-right: 8px;
+          margin-bottom: 4px; /* Align with bottom of bubble */
+        }
+        .avatar-circle {
+           width: 100%;
+           height: 100%;
+           border-radius: 50%;
+           color: white;
+           font-size: 10px;
+           font-weight: bold;
+           display: flex;
+           align-items: center;
+           justify-content: center;
+        }
+
+        .msg-content {
+          display: flex;
+          flex-direction: column;
+          max-width: 70%;
+        }
+        .msg-name {
+          font-size: 10px;
+          color: #65676b;
+          margin-bottom: 2px;
+          margin-left: 2px;
+        }
+        .msg-bubble {
+          padding: 8px 12px;
+          font-size: 14px;
+          line-height: 1.4;
+          word-wrap: break-word;
+        }
+
+        /* Self Styling */
+        .msg-me .msg-bubble {
+          background-color: #0084ff;
+          color: white;
+          border-radius: 18px 18px 4px 18px; /* TopL, TopR, BotR, BotL */
+        }
+        .msg-me + .msg-me .msg-bubble {
+           border-radius: 18px 4px 4px 18px; /* Stacked look */
+        }
+        
+        /* Other Styling */
+        .msg-other .msg-bubble {
+          background-color: #f0f0f0;
+          color: #050505;
+          border-radius: 18px 18px 18px 4px;
+        }
+
+        .msg-system {
+          text-align: center;
+          margin: 10px 0;
+        }
+        .msg-system span {
+          font-size: 11px;
+          color: #65676b;
+          background: #f0f2f5;
+          padding: 4px 8px;
+          border-radius: 10px;
+        }
+
+        /* FOOTER */
+        .chat-footer {
+          padding: 8px;
+          display: flex;
+          align-items: center;
+          border-top: 1px solid transparent; /* Cleaner look */
+        }
+        .footer-actions {
+          display: flex;
+          gap: 12px;
+          margin-right: 8px;
+          align-items: center;
+        }
+        .footer-icon {
+          color: #0084ff;
+          cursor: pointer;
+        }
+        .footer-icon-group {
+           display: flex; 
+           align-items: center;
+           gap: 8px;
+        }
+        .gif-badge {
+           font-size: 10px;
+           font-weight: 900;
+           color: white;
+           background: #0084ff;
+           padding: 2px 4px;
+           border-radius: 4px;
+           cursor: pointer;
+        }
+
+        .input-container {
+          flex: 1;
+          position: relative;
+          background: #f0f2f5;
+          border-radius: 20px;
+          display: flex;
+          align-items: center;
+        }
+        .input-container input {
+          width: 100%;
+          border: none;
+          background: transparent;
+          padding: 8px 30px 8px 12px;
+          font-size: 14px;
+          outline: none;
+          color: #050505;
+        }
+        .input-smiley {
+          position: absolute;
+          right: 8px;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+        }
+
+        /* Scrollbar */
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background-color: rgba(0,0,0,0.2); border-radius: 3px; }
       `}</style>
     </div>
   );
