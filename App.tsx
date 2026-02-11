@@ -10,9 +10,9 @@ import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, Refr
 import mqtt from 'mqtt';
 
 // --- DUAL BROKER CONFIGURATION ---
-// 1. Game Core Broker (Stability is priority)
-const GAME_BROKER_URL = 'wss://broker.hivemq.com:8000/mqtt'; 
-// 2. Chat Broker (High volume/burst tolerance)
+// 1. Game Core Broker (Stability is priority) - Switched to Eclipse IoT (Port 443 WSS)
+const GAME_BROKER_URL = 'wss://mqtt.eclipseprojects.io:443/mqtt'; 
+// 2. Chat Broker (High volume/burst tolerance) - Kept EMQX
 const CHAT_BROKER_URL = 'wss://broker.emqx.io:8084/mqtt';
 
 const TOPIC_PREFIX = 'loto-vui-v3';
@@ -247,7 +247,7 @@ const App: React.FC = () => {
             if (!err) publishState(gameClient, shortCode, initialState);
         });
     }, () => {
-        setConnectionError('Không thể kết nối máy chủ Game (HiveMQ).');
+        setConnectionError('Không thể kết nối máy chủ Game. Hãy thử lại sau.');
         setIsGameConnecting(false);
     });
 
