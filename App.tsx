@@ -5,23 +5,18 @@ import Lobby from './components/Lobby';
 import Ticket from './components/Ticket';
 import NumberBoard from './components/NumberBoard';
 import { generateMCCommentary } from './services/geminiService';
-import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw } from 'lucide-react';
+import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle } from 'lucide-react';
 import Peer, { DataConnection } from 'peerjs';
 
 const ROOM_PREFIX = 'loto-vui-vn-v2-';
 
-// Cấu hình ICE Servers MẠNH MẼ HƠN
-// Bao gồm STUN (Google) để tìm IP
-// VÀ TURN (OpenRelay) để relay dữ liệu khi 2 bên không thấy nhau trực tiếp (Fix lỗi 4G/Wifi khác mạng)
 const PEER_CONFIG = {
-  debug: 2, // Tăng log để dễ debug
+  debug: 2,
+  secure: true, // Quan trọng: Bắt buộc dùng SSL/TLS để tránh lỗi Mixed Content và Firewall
   config: {
     iceServers: [
-      // 1. Google STUN (Cơ bản)
       { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      
-      // 2. OpenRelay Free TURN (Quan trọng cho xuyên mạng 4G/Wifi)
+      { urls: 'stun:global.stun.twilio.com:3478' },
       {
         urls: "turn:openrelay.metered.ca:80",
         username: "openrelayproject",
@@ -38,7 +33,7 @@ const PEER_CONFIG = {
         credential: "openrelayproject",
       },
     ],
-    iceTransportPolicy: 'all' as RTCIceTransportPolicy, // Thử mọi cách kết nối
+    iceTransportPolicy: 'all' as RTCIceTransportPolicy,
   },
 };
 
@@ -72,20 +67,6 @@ const App: React.FC = () => {
     });
   }, []);
 
-  const syncStateToGuests = useCallback((currentState: RoomState) => {
-    const payload = {
-      type: 'SYNC_STATE',
-      state: {
-        ...currentState,
-        players: currentState.players.map(p => ({
-          ...p,
-          markedNumbers: Array.from(p.markedNumbers)
-        }))
-      }
-    };
-    broadcast(payload);
-  }, [broadcast]);
-
   useEffect(() => {
     return () => {
       if (peerRef.current) peerRef.current.destroy();
@@ -98,11 +79,13 @@ const App: React.FC = () => {
     setIsConnecting(true);
     setConnectionError('');
     
-    // Tạo mã phòng
+    if (peerRef.current) {
+        peerRef.current.destroy();
+    }
+
     const shortCode = Math.random().toString(36).substring(2, 7).toUpperCase();
     const fullRoomId = ROOM_PREFIX + shortCode;
 
-    // Khởi tạo Host Peer
     const peer = new Peer(fullRoomId, PEER_CONFIG);
 
     peer.on('open', (id) => {
@@ -139,6 +122,9 @@ const App: React.FC = () => {
 
       conn.on('open', () => {
          connectionsRef.current.push(conn);
+         // Send immediate sync to new guest
+         const current = gameStateRef.current; // Access via ref to get latest state in callback closure if needed, but here we use the latest state from re-render or setState updater
+         // We will trigger a sync from state effect or manually here using current state
       });
 
       conn.on('close', () => {
@@ -146,7 +132,6 @@ const App: React.FC = () => {
          setGameState(prev => {
             const updatedPlayers = prev.players.filter(p => p.peerId !== conn.peer);
             const newState = { ...prev, players: updatedPlayers };
-            // Sync lại cho những người còn lại
             setTimeout(() => {
                 const payload = {
                     type: 'SYNC_STATE',
@@ -166,88 +151,98 @@ const App: React.FC = () => {
     });
 
     peer.on('error', (err) => {
-      console.error("Host Error:", err);
+      console.error("Host Peer Error:", err);
       setIsConnecting(false);
-      if (err.type === 'unavailable-id') {
-         setConnectionError('Mã phòng bị trùng. Vui lòng thử lại.');
-      } else if (err.type === 'network' || err.type === 'disconnected') {
-         setConnectionError('Lỗi mạng. Vui lòng kiểm tra kết nối internet.');
-      } else if (err.type === 'server-error') {
-         setConnectionError('Không thể kết nối máy chủ PeerJS.');
-      } else {
-         setConnectionError(`Lỗi tạo phòng: ${err.type}`);
-      }
+      setConnectionError(`Lỗi tạo phòng: ${err.type === 'unavailable-id' ? 'Mã phòng trùng, thử lại.' : err.message}`);
     });
+
     peerRef.current = peer;
   };
+
+  // Needed to access latest state in callbacks if they aren't recreated
+  const gameStateRef = useRef(gameState);
+  useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
 
   const joinRoom = (playerName: string, roomCode: string) => {
     setIsConnecting(true);
     setConnectionError('');
-    const fullRoomId = ROOM_PREFIX + roomCode.toUpperCase();
     
-    // Khởi tạo Guest Peer
-    const peer = new Peer(PEER_CONFIG);
+    if (peerRef.current) {
+        peerRef.current.destroy();
+    }
 
-    // Timeout kết nối (15s vì TURN relay có thể chậm hơn chút)
-    const connectionTimeout = setTimeout(() => {
+    const fullRoomId = ROOM_PREFIX + roomCode.toUpperCase();
+    const peer = new Peer(PEER_CONFIG);
+    
+    // Timeout cho toàn bộ quá trình kết nối
+    const overallTimeout = setTimeout(() => {
         if (isConnecting) {
-            setConnectionError("Kết nối quá lâu. Có thể do tường lửa chặn hoặc sai mã phòng. Hãy thử lại.");
-            setIsConnecting(false);
-            if (peerRef.current) peerRef.current.destroy();
+             setConnectionError("Không tìm thấy phòng hoặc kết nối quá yếu. Hãy kiểm tra lại Mã Phòng.");
+             setIsConnecting(false);
+             if (peerRef.current) peerRef.current.destroy();
         }
-    }, 15000);
+    }, 20000);
 
     peer.on('open', (id) => {
-      console.log('My Guest ID:', id);
+      console.log('Guest ID:', id);
       setPlayerId(id);
       
-      // Bắt đầu kết nối tới Host
-      const conn = peer.connect(fullRoomId, { 
-          reliable: true,
-          // serialization: 'json' // Mặc định là binary/json
-      });
+      const connectToHost = () => {
+          console.log("Attempting to connect to host:", fullRoomId);
+          const conn = peer.connect(fullRoomId, { 
+              serialization: 'json',
+              reliable: false // Tắt reliable để dùng UDP, tăng khả năng xuyên NAT
+          });
 
-      conn.on('open', () => {
-        clearTimeout(connectionTimeout);
-        console.log("Connected to Host via PeerJS");
-        setIsConnecting(false);
-        hostConnRef.current = conn;
+          conn.on('open', () => {
+            clearTimeout(overallTimeout);
+            console.log("Connected to Host!");
+            setIsConnecting(false);
+            hostConnRef.current = conn;
 
-        const myTicket = generateTicket();
-        const joinPayload = {
-            type: 'JOIN_REQUEST',
-            player: {
-                id: id,
-                name: playerName,
-                isHost: false,
-                isBot: false,
-                ticket: myTicket,
-                markedNumbers: [], 
-                peerId: id
-            }
-        };
-        conn.send(joinPayload);
-      });
+            const myTicket = generateTicket();
+            const joinPayload = {
+                type: 'JOIN_REQUEST',
+                player: {
+                    id: id,
+                    name: playerName,
+                    isHost: false,
+                    isBot: false,
+                    ticket: myTicket,
+                    markedNumbers: [], 
+                    peerId: id
+                }
+            };
+            conn.send(joinPayload);
+          });
 
-      conn.on('data', (data: any) => handleGuestReceivedData(data));
-      
-      conn.on('close', () => {
-        alert("Kết nối với chủ phòng bị ngắt!");
-        window.location.reload();
-      });
+          conn.on('data', (data: any) => handleGuestReceivedData(data));
+          
+          conn.on('close', () => {
+            alert("Mất kết nối với chủ phòng.");
+            window.location.reload();
+          });
 
-      conn.on('error', (err) => {
-          console.error("Connection Error:", err);
-      });
+          conn.on('error', (err) => {
+              console.error("Connection level error:", err);
+              // PeerJS tự động retry ở tầng dưới, nhưng nếu fail hẳn:
+          });
+      };
+
+      connectToHost();
     });
 
     peer.on('error', (err) => {
-        clearTimeout(connectionTimeout);
         console.error("Guest Peer Error:", err);
-        setIsConnecting(false);
-        setConnectionError('Lỗi kết nối máy chủ Peer. Hãy thử tải lại trang.');
+        // Nếu lỗi là "Could not connect to peer", có thể do Host chưa sẵn sàng hoặc NAT.
+        // PeerJS emit lỗi này khi không tìm thấy peer ID trên server.
+        if (err.type === 'peer-unavailable') {
+             clearTimeout(overallTimeout);
+             setConnectionError(`Không tìm thấy phòng mã "${roomCode}". Hãy kiểm tra lại.`);
+             setIsConnecting(false);
+        }
     });
+
     peerRef.current = peer;
   };
 
@@ -255,7 +250,9 @@ const App: React.FC = () => {
   const handleHostReceivedData = (data: any, conn: DataConnection) => {
       if (data.type === 'JOIN_REQUEST') {
           setGameState(prev => {
+              // Prevent duplicates
               if (prev.players.some(p => p.id === data.player.id)) return prev;
+              
               const newPlayer: Player = {
                   ...data.player,
                   markedNumbers: new Set<number>(data.player.markedNumbers) 
@@ -264,6 +261,8 @@ const App: React.FC = () => {
                   ...prev,
                   players: [...prev.players, newPlayer]
               };
+              
+              // Sync state to everyone immediately
               setTimeout(() => {
                   const payload = {
                     type: 'SYNC_STATE',
@@ -276,7 +275,8 @@ const App: React.FC = () => {
                     }
                   };
                   connectionsRef.current.forEach(c => c.open && c.send(payload));
-              }, 50);
+              }, 100);
+              
               return newState;
           });
       } 
@@ -291,6 +291,7 @@ const App: React.FC = () => {
                      return p;
                  })
              };
+             // Optional: Broadcast marks to others if needed, but usually only Host needs to know for validation
              return newState;
           });
       } 
@@ -545,8 +546,12 @@ const App: React.FC = () => {
         <>
             <Lobby onCreateRoom={createRoom} onJoinRoom={joinRoom} isCreating={isConnecting} />
             {connectionError && (
-                <div style={{position: 'fixed', top: '20px', right: '20px', background: '#fee2e2', color: '#b91c1c', padding: '1rem', borderRadius: '8px', border: '1px solid #fca5a5', zIndex: 100}}>
-                    <strong>Lỗi: </strong> {connectionError}
+                <div style={{position: 'fixed', top: '20px', right: '20px', background: '#fee2e2', color: '#b91c1c', padding: '1rem', borderRadius: '8px', border: '1px solid #fca5a5', zIndex: 100, display: 'flex', alignItems: 'center', gap: '0.5rem', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)'}}>
+                    <AlertTriangle size={20} />
+                    <div>
+                        <strong>Lỗi kết nối:</strong> <br/>
+                        {connectionError}
+                    </div>
                 </div>
             )}
         </>
