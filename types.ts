@@ -14,6 +14,8 @@ export interface Player {
   isBot: boolean;
   ticket: TicketData;
   markedNumbers: Set<number>;
+  isReady: boolean; // New: Ready status
+  color: string;    // New: Ticket color theme (hex)
 }
 
 export type GameStatus = 'lobby' | 'waiting' | 'playing' | 'ended';
@@ -25,8 +27,18 @@ export interface RoomState {
   calledNumbers: number[];
   currentNumber: number | null;
   winner: Player | null;
-  mcCommentary: string; // From Gemini
+  mcCommentary: string;
 }
 
 export const TOTAL_NUMBERS = 90;
 export const CALL_INTERVAL_MS = 4500; // Time between calls
+
+export const TICKET_COLORS = [
+  '#dc2626', // Red (Default)
+  '#2563eb', // Blue
+  '#16a34a', // Green
+  '#9333ea', // Purple
+  '#ea580c', // Orange
+  '#db2777', // Pink
+  '#0891b2', // Cyan
+];
