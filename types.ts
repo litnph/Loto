@@ -14,7 +14,6 @@ export interface Player {
   isBot: boolean;
   ticket: TicketData;
   markedNumbers: Set<number>;
-  peerId?: string; // For network connection
 }
 
 export type GameStatus = 'lobby' | 'waiting' | 'playing' | 'ended';

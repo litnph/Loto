@@ -6,36 +6,12 @@ import Ticket from './components/Ticket';
 import NumberBoard from './components/NumberBoard';
 import { generateMCCommentary } from './services/geminiService';
 import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle } from 'lucide-react';
-import Peer, { DataConnection } from 'peerjs';
+import mqtt from 'mqtt';
 
-const ROOM_PREFIX = 'loto-vui-vn-v2-';
-
-const PEER_CONFIG = {
-  debug: 2,
-  secure: true, // Quan trọng: Bắt buộc dùng SSL/TLS để tránh lỗi Mixed Content và Firewall
-  config: {
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:global.stun.twilio.com:3478' },
-      {
-        urls: "turn:openrelay.metered.ca:80",
-        username: "openrelayproject",
-        credential: "openrelayproject",
-      },
-      {
-        urls: "turn:openrelay.metered.ca:443",
-        username: "openrelayproject",
-        credential: "openrelayproject",
-      },
-      {
-        urls: "turn:openrelay.metered.ca:443?transport=tcp",
-        username: "openrelayproject",
-        credential: "openrelayproject",
-      },
-    ],
-    iceTransportPolicy: 'all' as RTCIceTransportPolicy,
-  },
-};
+// Sử dụng Public Broker có hỗ trợ WebSockets Secure (WSS)
+const BROKER_URL = 'wss://broker.emqx.io:8084/mqtt'; 
+// Topic prefix để tránh trùng lặp trên public broker
+const TOPIC_PREFIX = 'loto-vui-v3';
 
 const App: React.FC = () => {
   const [gameState, setGameState] = useState<RoomState>({
@@ -53,346 +29,286 @@ const App: React.FC = () => {
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectionError, setConnectionError] = useState('');
   
-  const peerRef = useRef<Peer | null>(null);
-  const connectionsRef = useRef<DataConnection[]>([]);
-  const hostConnRef = useRef<DataConnection | null>(null);
+  const clientRef = useRef<mqtt.MqttClient | null>(null);
   const callIntervalRef = useRef<any>(null);
+  const gameStateRef = useRef(gameState);
 
-  // --- Network Helpers ---
-  const broadcast = useCallback((data: any) => {
-    connectionsRef.current.forEach(conn => {
-      if (conn.open) {
-        conn.send(data);
-      }
-    });
-  }, []);
+  // Sync state ref for event handlers
+  useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
 
   useEffect(() => {
     return () => {
-      if (peerRef.current) peerRef.current.destroy();
+      if (clientRef.current) {
+          clientRef.current.end();
+      }
       if (callIntervalRef.current) clearInterval(callIntervalRef.current);
     };
   }, []);
 
+  // --- MQTT Helpers ---
+  
+  const getHostTopic = (code: string) => `${TOPIC_PREFIX}/${code}/host`;
+  const getClientTopic = (code: string) => `${TOPIC_PREFIX}/${code}/client`;
+
+  const setupMqttClient = useCallback((clientId: string, onConnect: () => void) => {
+    try {
+        const client = mqtt.connect(BROKER_URL, {
+            clientId,
+            keepalive: 60,
+            clean: true,
+            reconnectPeriod: 1000,
+            connectTimeout: 30 * 1000,
+        });
+
+        client.on('connect', () => {
+            console.log('MQTT Connected');
+            setIsConnecting(false);
+            onConnect();
+        });
+
+        client.on('error', (err) => {
+            console.error('MQTT Error:', err);
+            setIsConnecting(false);
+            setConnectionError('Lỗi kết nối máy chủ tin nhắn. Vui lòng thử lại.');
+        });
+
+        client.on('offline', () => {
+            console.log('MQTT Offline');
+        });
+
+        return client;
+    } catch (err) {
+        console.error("MQTT Setup Error", err);
+        setConnectionError("Không thể khởi tạo kết nối mạng.");
+        return null;
+    }
+  }, []);
+
   // --- Game Actions ---
+
   const createRoom = async (playerName: string) => {
     setIsConnecting(true);
     setConnectionError('');
     
-    if (peerRef.current) {
-        peerRef.current.destroy();
-    }
+    if (clientRef.current) clientRef.current.end();
 
     const shortCode = Math.random().toString(36).substring(2, 7).toUpperCase();
-    const fullRoomId = ROOM_PREFIX + shortCode;
+    const myId = `host-${Date.now()}`;
+    setPlayerId(myId);
 
-    const peer = new Peer(fullRoomId, PEER_CONFIG);
+    const client = setupMqttClient(myId, () => {
+        const myTicket = generateTicket();
+        const hostPlayer: Player = {
+            id: myId,
+            name: playerName,
+            isHost: true,
+            isBot: false,
+            ticket: myTicket,
+            markedNumbers: new Set(),
+        };
 
-    peer.on('open', (id) => {
-      console.log('Host ID:', id);
-      const myTicket = generateTicket();
-      const hostPlayer: Player = {
-        id: id,
-        name: playerName,
-        isHost: true,
-        isBot: false,
-        ticket: myTicket,
-        markedNumbers: new Set(),
-        peerId: id
-      };
+        const initialState: RoomState = {
+            code: shortCode,
+            players: [hostPlayer],
+            status: 'waiting',
+            calledNumbers: [],
+            currentNumber: null,
+            winner: null,
+            mcCommentary: 'Chào mừng! Chia sẻ mã phòng cho bạn bè để bắt đầu.',
+        };
 
-      setPlayerId(id);
-      setGameState({
-        code: shortCode,
-        players: [hostPlayer],
-        status: 'waiting',
-        calledNumbers: [],
-        currentNumber: null,
-        winner: null,
-        mcCommentary: 'Chào mừng! Chia sẻ mã phòng cho bạn bè để bắt đầu.',
-      });
-      setIsConnecting(false);
+        setGameState(initialState);
+
+        // Host subscribes to client actions
+        client.subscribe(getClientTopic(shortCode), (err) => {
+            if (!err) {
+                 // Publish initial state (retain=true so new joiners get it immediately)
+                 publishState(client, shortCode, initialState);
+            }
+        });
     });
 
-    peer.on('connection', (conn) => {
-      console.log('Guest connected:', conn.peer);
-      conn.on('data', (data: any) => {
-        handleHostReceivedData(data, conn);
-      });
-
-      conn.on('open', () => {
-         connectionsRef.current.push(conn);
-         // Send immediate sync to new guest
-         const current = gameStateRef.current; // Access via ref to get latest state in callback closure if needed, but here we use the latest state from re-render or setState updater
-         // We will trigger a sync from state effect or manually here using current state
-      });
-
-      conn.on('close', () => {
-         connectionsRef.current = connectionsRef.current.filter(c => c !== conn);
-         setGameState(prev => {
-            const updatedPlayers = prev.players.filter(p => p.peerId !== conn.peer);
-            const newState = { ...prev, players: updatedPlayers };
-            setTimeout(() => {
-                const payload = {
-                    type: 'SYNC_STATE',
-                    state: {
-                        ...newState,
-                        players: newState.players.map(p => ({
-                        ...p,
-                        markedNumbers: Array.from(p.markedNumbers)
-                        }))
-                    }
-                };
-                connectionsRef.current.forEach(c => c.open && c.send(payload));
-            }, 100);
-            return newState;
-         });
-      });
-    });
-
-    peer.on('error', (err) => {
-      console.error("Host Peer Error:", err);
-      setIsConnecting(false);
-      setConnectionError(`Lỗi tạo phòng: ${err.type === 'unavailable-id' ? 'Mã phòng trùng, thử lại.' : err.message}`);
-    });
-
-    peerRef.current = peer;
+    if (client) {
+        client.on('message', (topic, message) => {
+            handleHostMessage(topic, message);
+        });
+        clientRef.current = client;
+    }
   };
-
-  // Needed to access latest state in callbacks if they aren't recreated
-  const gameStateRef = useRef(gameState);
-  useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
 
   const joinRoom = (playerName: string, roomCode: string) => {
     setIsConnecting(true);
     setConnectionError('');
-    
-    if (peerRef.current) {
-        peerRef.current.destroy();
-    }
 
-    const fullRoomId = ROOM_PREFIX + roomCode.toUpperCase();
-    const peer = new Peer(PEER_CONFIG);
-    
-    // Timeout cho toàn bộ quá trình kết nối
-    const overallTimeout = setTimeout(() => {
+    if (clientRef.current) clientRef.current.end();
+
+    const myId = `player-${Date.now()}`;
+    setPlayerId(myId);
+
+    // Timeout check if room doesn't exist (no retained message received)
+    const joinTimeout = setTimeout(() => {
         if (isConnecting) {
-             setConnectionError("Không tìm thấy phòng hoặc kết nối quá yếu. Hãy kiểm tra lại Mã Phòng.");
-             setIsConnecting(false);
-             if (peerRef.current) peerRef.current.destroy();
-        }
-    }, 20000);
-
-    peer.on('open', (id) => {
-      console.log('Guest ID:', id);
-      setPlayerId(id);
-      
-      const connectToHost = () => {
-          console.log("Attempting to connect to host:", fullRoomId);
-          const conn = peer.connect(fullRoomId, { 
-              serialization: 'json',
-              reliable: false // Tắt reliable để dùng UDP, tăng khả năng xuyên NAT
-          });
-
-          conn.on('open', () => {
-            clearTimeout(overallTimeout);
-            console.log("Connected to Host!");
+            setConnectionError("Không tìm thấy phòng hoặc mạng chậm. Hãy kiểm tra lại mã phòng.");
             setIsConnecting(false);
-            hostConnRef.current = conn;
-
-            const myTicket = generateTicket();
-            const joinPayload = {
-                type: 'JOIN_REQUEST',
-                player: {
-                    id: id,
-                    name: playerName,
-                    isHost: false,
-                    isBot: false,
-                    ticket: myTicket,
-                    markedNumbers: [], 
-                    peerId: id
-                }
-            };
-            conn.send(joinPayload);
-          });
-
-          conn.on('data', (data: any) => handleGuestReceivedData(data));
-          
-          conn.on('close', () => {
-            alert("Mất kết nối với chủ phòng.");
-            window.location.reload();
-          });
-
-          conn.on('error', (err) => {
-              console.error("Connection level error:", err);
-              // PeerJS tự động retry ở tầng dưới, nhưng nếu fail hẳn:
-          });
-      };
-
-      connectToHost();
-    });
-
-    peer.on('error', (err) => {
-        console.error("Guest Peer Error:", err);
-        // Nếu lỗi là "Could not connect to peer", có thể do Host chưa sẵn sàng hoặc NAT.
-        // PeerJS emit lỗi này khi không tìm thấy peer ID trên server.
-        if (err.type === 'peer-unavailable') {
-             clearTimeout(overallTimeout);
-             setConnectionError(`Không tìm thấy phòng mã "${roomCode}". Hãy kiểm tra lại.`);
-             setIsConnecting(false);
+            if (clientRef.current) clientRef.current.end();
         }
+    }, 10000);
+
+    const client = setupMqttClient(myId, () => {
+        // Guest subscribes to host state
+        client.subscribe(getHostTopic(roomCode), (err) => {
+            if (!err) {
+                 // Send Join Request
+                 const myTicket = generateTicket();
+                 const joinPayload = {
+                     type: 'JOIN_REQUEST',
+                     player: {
+                         id: myId,
+                         name: playerName,
+                         isHost: false,
+                         isBot: false,
+                         ticket: myTicket,
+                         markedNumbers: [],
+                     }
+                 };
+                 client.publish(getClientTopic(roomCode), JSON.stringify(joinPayload));
+            }
+        });
     });
 
-    peerRef.current = peer;
+    if (client) {
+        client.on('message', (topic, message) => {
+            // First message received means connection successful and room exists
+            clearTimeout(joinTimeout);
+            handleGuestMessage(topic, message);
+        });
+        clientRef.current = client;
+    }
   };
 
-  // --- Data Handling ---
-  const handleHostReceivedData = (data: any, conn: DataConnection) => {
-      if (data.type === 'JOIN_REQUEST') {
-          setGameState(prev => {
-              // Prevent duplicates
-              if (prev.players.some(p => p.id === data.player.id)) return prev;
-              
-              const newPlayer: Player = {
-                  ...data.player,
-                  markedNumbers: new Set<number>(data.player.markedNumbers) 
-              };
-              const newState = {
-                  ...prev,
-                  players: [...prev.players, newPlayer]
-              };
-              
-              // Sync state to everyone immediately
-              setTimeout(() => {
-                  const payload = {
-                    type: 'SYNC_STATE',
-                    state: {
-                        ...newState,
-                        players: newState.players.map(p => ({
-                        ...p,
-                        markedNumbers: Array.from(p.markedNumbers)
-                        }))
-                    }
+  // --- Messaging Logic ---
+
+  const publishState = (client: mqtt.MqttClient, code: string, state: RoomState) => {
+      const payload = JSON.stringify({
+          ...state,
+          players: state.players.map(p => ({
+              ...p,
+              markedNumbers: Array.from(p.markedNumbers)
+          }))
+      });
+      // Retain = true is CRITICAL for guests joining late or reconnecting
+      client.publish(getHostTopic(code), payload, { retain: true });
+  };
+
+  const handleHostMessage = (topic: string, message: any) => {
+      try {
+          const data = JSON.parse(message.toString());
+          const currentState = gameStateRef.current;
+          let newState = { ...currentState };
+          let shouldUpdate = false;
+
+          if (data.type === 'JOIN_REQUEST') {
+              if (!currentState.players.some(p => p.id === data.player.id)) {
+                  const newPlayer: Player = {
+                      ...data.player,
+                      markedNumbers: new Set(data.player.markedNumbers)
                   };
-                  connectionsRef.current.forEach(c => c.open && c.send(payload));
-              }, 100);
-              
-              return newState;
-          });
-      } 
-      else if (data.type === 'MARK_UPDATE') {
-          setGameState(prev => {
-             const newState = {
-                 ...prev,
-                 players: prev.players.map(p => {
-                     if (p.id === data.playerId) {
-                         return { ...p, markedNumbers: new Set<number>(data.markedNumbers) };
-                     }
-                     return p;
-                 })
-             };
-             // Optional: Broadcast marks to others if needed, but usually only Host needs to know for validation
-             return newState;
-          });
-      } 
-      else if (data.type === 'BINGO_CLAIM') {
-          setGameState(prev => {
-            const player = prev.players.find(p => p.id === data.playerId);
-            if (player) {
-                const claimedMarked = new Set<number>(data.markedNumbers);
-                if (checkWin(player.ticket, claimedMarked)) {
-                    const newState = {
-                        ...prev,
-                        status: 'ended' as GameStatus,
-                        winner: player,
-                        mcCommentary: `CHÚC MỪNG! ${player.name} ĐÃ KINH RỒI!`,
-                    };
-                    setTimeout(() => {
-                         const payload = {
-                            type: 'SYNC_STATE',
-                            state: {
-                                ...newState,
-                                players: newState.players.map(p => ({
-                                ...p,
-                                markedNumbers: Array.from(p.markedNumbers)
-                                }))
-                            }
-                        };
-                        connectionsRef.current.forEach(c => c.open && c.send(payload));
-                    }, 0);
-                    if (callIntervalRef.current) clearInterval(callIntervalRef.current);
-                    return newState;
-                }
-            }
-            return prev;
-          });
+                  newState.players = [...currentState.players, newPlayer];
+                  shouldUpdate = true;
+              }
+          } 
+          else if (data.type === 'MARK_UPDATE') {
+              newState.players = currentState.players.map(p => {
+                  if (p.id === data.playerId) {
+                      return { ...p, markedNumbers: new Set<number>(data.markedNumbers) };
+                  }
+                  return p;
+              });
+              shouldUpdate = true;
+          }
+          else if (data.type === 'BINGO_CLAIM') {
+              const player = currentState.players.find(p => p.id === data.playerId);
+              if (player) {
+                  const claimedMarked = new Set<number>(data.markedNumbers);
+                  if (checkWin(player.ticket, claimedMarked)) {
+                      newState.status = 'ended';
+                      newState.winner = player;
+                      newState.mcCommentary = `CHÚC MỪNG! ${player.name} ĐÃ KINH RỒI!`;
+                      if (callIntervalRef.current) clearInterval(callIntervalRef.current);
+                      shouldUpdate = true;
+                  }
+              }
+          }
+
+          if (shouldUpdate) {
+              setGameState(newState);
+              if (clientRef.current) {
+                  publishState(clientRef.current, currentState.code, newState);
+              }
+          }
+
+      } catch (e) {
+          console.error("Error parsing host message", e);
       }
   };
 
-  const handleGuestReceivedData = (data: any) => {
-      if (data.type === 'SYNC_STATE') {
-          const remoteState = data.state;
+  const handleGuestMessage = (topic: string, message: any) => {
+      try {
+          // Message from Host is the full state
+          const remoteState = JSON.parse(message.toString());
+          
+          // Hydrate Sets
           const hydratedPlayers = remoteState.players.map((p: any) => ({
               ...p,
               markedNumbers: new Set<number>(p.markedNumbers)
           }));
+
           setGameState({
               ...remoteState,
               players: hydratedPlayers,
           });
+          
+          // Valid state received
+          setIsConnecting(false);
+
+      } catch (e) {
+          console.error("Error parsing guest message", e);
       }
   };
 
-  // --- Game Loop ---
+  // --- Game Loop (Host Only) ---
+
   const startGame = useCallback(() => {
     setGameState(prev => {
-        const newState = {
+        const newState: RoomState = {
             ...prev,
-            status: 'playing' as GameStatus,
+            status: 'playing',
             mcCommentary: 'Trò chơi bắt đầu! Chuẩn bị dò số nào...',
         };
-        const payload = {
-            type: 'SYNC_STATE',
-            state: {
-                ...newState,
-                players: newState.players.map(p => ({
-                    ...p,
-                    markedNumbers: Array.from(p.markedNumbers)
-                }))
-            }
-        };
-        connectionsRef.current.forEach(c => c.open && c.send(payload));
+        if (clientRef.current) publishState(clientRef.current, prev.code, newState);
         return newState;
     });
   }, []);
 
   const drawNumber = useCallback(async () => {
-    setGameState(prev => {
-      if (prev.status !== 'playing' || prev.calledNumbers.length >= TOTAL_NUMBERS) return prev;
-      const available = Array.from({ length: TOTAL_NUMBERS }, (_, i) => i + 1)
-        .filter(n => !prev.calledNumbers.includes(n));
-      if (available.length === 0) return prev;
-      const nextNum = available[Math.floor(Math.random() * available.length)];
-      
-      const newState = {
-        ...prev,
+    const currentState = gameStateRef.current;
+    if (currentState.status !== 'playing' || currentState.calledNumbers.length >= TOTAL_NUMBERS) return;
+    
+    const available = Array.from({ length: TOTAL_NUMBERS }, (_, i) => i + 1)
+      .filter(n => !currentState.calledNumbers.includes(n));
+    
+    if (available.length === 0) return;
+    
+    const nextNum = available[Math.floor(Math.random() * available.length)];
+    
+    const newState = {
+        ...currentState,
         currentNumber: nextNum,
-        calledNumbers: [...prev.calledNumbers, nextNum],
-      };
+        calledNumbers: [...currentState.calledNumbers, nextNum],
+    };
 
-      const payload = {
-        type: 'SYNC_STATE',
-        state: {
-            ...newState,
-            players: newState.players.map(p => ({
-                ...p,
-                markedNumbers: Array.from(p.markedNumbers)
-            }))
-        }
-      };
-      connectionsRef.current.forEach(c => c.open && c.send(payload));
-      return newState;
-    });
+    setGameState(newState);
+    if (clientRef.current) publishState(clientRef.current, newState.code, newState);
   }, []);
 
   useEffect(() => {
@@ -407,34 +323,31 @@ const App: React.FC = () => {
     };
   }, [gameState.status, gameState.winner, gameState.players, playerId, drawNumber]);
 
+  // MC Commentary Effect
   useEffect(() => {
     const me = gameState.players.find(p => p.id === playerId);
     if (me?.isHost && gameState.currentNumber && gameState.status === 'playing') {
       const fetchCommentary = async () => {
         setMcLoading(true);
         const text = await generateMCCommentary(gameState.currentNumber!);
-        setGameState(prev => {
-            const newState = { ...prev, mcCommentary: text };
-            const payload = {
-                type: 'SYNC_STATE',
-                state: {
-                    ...newState,
-                    players: newState.players.map(p => ({
-                        ...p,
-                        markedNumbers: Array.from(p.markedNumbers)
-                    }))
-                }
-            };
-            connectionsRef.current.forEach(c => c.open && c.send(payload));
-            return newState;
-        });
+        
+        // Use functional update but check ref to ensure we don't overwrite newer state
+        const currentState = gameStateRef.current;
+        if(currentState.currentNumber !== gameState.currentNumber) return; // Stale
+
+        const newState = { ...currentState, mcCommentary: text };
+        setGameState(newState);
+        if (clientRef.current) publishState(clientRef.current, newState.code, newState);
+        
         setMcLoading(false);
       };
       fetchCommentary();
     }
   }, [gameState.currentNumber, gameState.status, playerId]);
 
-  // --- Interaction ---
+
+  // --- User Interaction ---
+
   const handleMarkNumber = (num: number) => {
     if (gameState.status !== 'playing') return;
     if (!gameState.calledNumbers.includes(num)) {
@@ -448,19 +361,27 @@ const App: React.FC = () => {
     if (newMarked.has(num)) newMarked.delete(num);
     else newMarked.add(num);
 
+    // Optimistic Update
     setGameState(prev => {
       const updatedPlayers = prev.players.map(p => 
         p.id === playerId ? { ...p, markedNumbers: newMarked } : p
       );
-      return { ...prev, players: updatedPlayers };
+      const newState = { ...prev, players: updatedPlayers };
+      
+      // If Host, broadcast immediately
+      if (me.isHost && clientRef.current) {
+          publishState(clientRef.current, prev.code, newState);
+      }
+      return newState;
     });
 
-    if (!me.isHost && hostConnRef.current) {
-        hostConnRef.current.send({
+    // If Guest, send update to Host
+    if (!me.isHost && clientRef.current) {
+        clientRef.current.publish(getClientTopic(gameState.code), JSON.stringify({
             type: 'MARK_UPDATE',
             playerId: playerId,
             markedNumbers: Array.from(newMarked)
-        });
+        }));
     }
   };
 
@@ -477,27 +398,17 @@ const App: React.FC = () => {
                         winner: me,
                         mcCommentary: `CHÚC MỪNG! ${me.name} ĐÃ KINH RỒI!`,
                     };
-                    const payload = {
-                        type: 'SYNC_STATE',
-                        state: {
-                            ...newState,
-                            players: newState.players.map(p => ({
-                                ...p,
-                                markedNumbers: Array.from(p.markedNumbers)
-                            }))
-                        }
-                    };
-                    connectionsRef.current.forEach(c => c.open && c.send(payload));
+                    if (clientRef.current) publishState(clientRef.current, prev.code, newState);
                     if (callIntervalRef.current) clearInterval(callIntervalRef.current);
                     return newState;
             });
         } else {
-            if (hostConnRef.current) {
-                hostConnRef.current.send({
+            if (clientRef.current) {
+                clientRef.current.publish(getClientTopic(gameState.code), JSON.stringify({
                     type: 'BINGO_CLAIM',
                     playerId: playerId,
                     markedNumbers: Array.from(me.markedNumbers)
-                });
+                }));
             }
         }
     } else {
@@ -522,17 +433,7 @@ const App: React.FC = () => {
                 markedNumbers: new Set()
             }))
         };
-        const payload = {
-            type: 'SYNC_STATE',
-            state: {
-                ...newState,
-                players: newState.players.map(p => ({
-                    ...p,
-                    markedNumbers: Array.from(p.markedNumbers)
-                }))
-            }
-        };
-        connectionsRef.current.forEach(c => c.open && c.send(payload));
+        if (clientRef.current) publishState(clientRef.current, prev.code, newState);
         return newState;
     });
   };
