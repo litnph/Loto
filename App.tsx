@@ -9,11 +9,11 @@ import { generateMCCommentary } from './services/geminiService';
 import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, Palette, Shuffle, X, Settings2, Flame, Coins, Plus, Eye, Trash2, Mic, LogOut, Pencil, Save, MessageSquareOff } from 'lucide-react';
 import mqtt from 'mqtt';
 
-// --- DUAL BROKER CONFIGURATION ---
-// 1. Game Core Broker (Stability is priority) - Switched to Eclipse IoT (Port 443 WSS)
-const GAME_BROKER_URL = 'wss://mqtt.eclipseprojects.io:443/mqtt'; 
-// 2. Chat Broker (High volume/burst tolerance) - Kept EMQX
-const CHAT_BROKER_URL = 'wss://broker.emqx.io:8084/mqtt';
+// --- BROKER CONFIGURATION ---
+// Switch to highly stable public brokers supporting WSS (Secure WebSocket)
+// to prevent Mixed Content errors on HTTPS hosting.
+const GAME_BROKER_URL = 'wss://broker.emqx.io:8084/mqtt'; 
+const CHAT_BROKER_URL = 'wss://mqtt.eclipseprojects.io:443/mqtt';
 
 const TOPIC_PREFIX = 'loto-vui-v3';
 
@@ -159,16 +159,18 @@ const App: React.FC = () => {
   // Generic Setup Function
   const setupMqttClient = useCallback((brokerUrl: string, clientId: string, onConnect?: () => void, onError?: () => void) => {
     try {
+        console.log(`Connecting to ${brokerUrl} as ${clientId}...`);
+        
+        // Ensure WSS is used and options are compatible
         const client = mqtt.connect(brokerUrl, {
             clientId,
             keepalive: 30,
             clean: true,
-            reconnectPeriod: 2000,
-            connectTimeout: 30 * 1000,
+            reconnectPeriod: 4000,
+            connectTimeout: 15000, // Increased timeout for slower connections
             reschedulePings: true,
-            protocolId: 'MQTT',
-            protocolVersion: 4,
-            path: '/mqtt'
+            path: '/mqtt', // Explicitly set path which helps some brokers
+            protocol: 'wss',
         });
 
         client.on('connect', () => {
@@ -179,6 +181,10 @@ const App: React.FC = () => {
         client.on('error', (err) => {
             console.error(`Error on ${brokerUrl}:`, err);
             if (onError) onError();
+        });
+
+        client.on('offline', () => {
+             console.log(`Client ${clientId} went offline`);
         });
         
         return client;
@@ -200,14 +206,24 @@ const App: React.FC = () => {
     if (chatClientRef.current) chatClientRef.current.end();
 
     const shortCode = Math.random().toString(36).substring(2, 7).toUpperCase();
-    const myId = `host-${Date.now()}`;
-    const chatId = `chat-host-${Date.now()}`; // Separate ID for chat
+    const myId = `host-${Date.now()}-${Math.floor(Math.random()*1000)}`;
+    const chatId = `chat-host-${Date.now()}-${Math.floor(Math.random()*1000)}`; 
     
     setPlayerId(myId);
     playerIdRef.current = myId;
 
+    // Timeout protection for Create Room
+    const createTimeout = setTimeout(() => {
+        if (isGameConnectingRef.current) {
+            setConnectionError("Kết nối quá lâu. Vui lòng kiểm tra mạng hoặc thử lại.");
+            setIsGameConnecting(false);
+            if (gameClientRef.current) gameClientRef.current.end();
+        }
+    }, 15000);
+
     // 1. Setup Game Client
     const gameClient = setupMqttClient(GAME_BROKER_URL, myId, () => {
+        clearTimeout(createTimeout); // Success
         setIsGameConnecting(false);
         
         const mySheet = generateTicket(TICKET_COLORS[0]);
@@ -247,11 +263,10 @@ const App: React.FC = () => {
             if (!err) publishState(gameClient, shortCode, initialState);
         });
     }, () => {
-        setConnectionError('Không thể kết nối máy chủ Game. Hãy thử lại sau.');
-        setIsGameConnecting(false);
+        // Error is logged, timeout will handle UI update if stuck
     });
 
-    // 2. Setup Chat Client (Independent)
+    // 2. Setup Chat Client (Separate Connection - Eclipse)
     const chatClient = setupMqttClient(CHAT_BROKER_URL, chatId, () => {
         setIsChatConnected(true);
         chatClient.subscribe(getChatTopic(shortCode));
@@ -262,7 +277,6 @@ const App: React.FC = () => {
 
     if (gameClient) {
         gameClient.on('message', (topic, message) => {
-             // Host only handles Client Updates on Game Client
              handleHostMessage(topic, message);
         });
         gameClientRef.current = gameClient;
@@ -287,14 +301,15 @@ const App: React.FC = () => {
     if (gameClientRef.current) gameClientRef.current.end();
     if (chatClientRef.current) chatClientRef.current.end();
 
-    const myId = `player-${Date.now()}`;
-    const chatId = `chat-player-${Date.now()}`;
+    const myId = `player-${Date.now()}-${Math.floor(Math.random()*1000)}`;
+    const chatId = `chat-player-${Date.now()}-${Math.floor(Math.random()*1000)}`;
     setPlayerId(myId);
     playerIdRef.current = myId;
 
+    // Timeout protection for Join Room
     const joinTimeout = setTimeout(() => {
         if (isGameConnectingRef.current) {
-            setConnectionError("Không tìm thấy phòng hoặc mạng chậm. Hãy kiểm tra lại mã phòng.");
+            setConnectionError("Không tìm thấy phòng hoặc mạng chậm.");
             setIsGameConnecting(false);
             if (gameClientRef.current) gameClientRef.current.end();
         }
@@ -330,7 +345,7 @@ const App: React.FC = () => {
             }
         });
     }, () => {
-        // Error on Game Client
+         // Connection error handler
     });
 
     // 2. Setup Chat Client
