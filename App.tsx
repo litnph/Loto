@@ -41,6 +41,7 @@ const App: React.FC = () => {
 
   // UI States
   const [activeSheetIndexForColor, setActiveSheetIndexForColor] = useState<number | null>(null);
+  // Rename state kept for logic safety but UI hidden
   const [isRenameModalOpen, setIsRenameModalOpen] = useState(false);
   const [renameValue, setRenameValue] = useState('');
 
@@ -1035,9 +1036,6 @@ const App: React.FC = () => {
                             <div className="flex justify-between items-center mb-2">
                                 <div className="flex items-center gap-2">
                                     <h3 className="font-bold">{me.name}</h3>
-                                    <button onClick={handleOpenRename} className="btn-icon" style={{width: '24px', height: '24px', padding: 0}} title="Đổi tên">
-                                        <Pencil size={14} />
-                                    </button>
                                 </div>
                                 <span className="text-sm font-bold text-muted">({me.sheets.length} Lá)</span>
                             </div>
@@ -1194,9 +1192,6 @@ const App: React.FC = () => {
                     <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem'}}>
                         <UserCircle2 size={24} style={{color: me?.color || '#dc2626'}} /> 
                         <h3 className="font-bold" style={{fontSize: '1.25rem'}}>Vé Của Bạn ({me?.name})</h3>
-                        <button onClick={handleOpenRename} className="btn-icon" style={{width: '28px', height: '28px', marginLeft: '0.5rem'}} title="Đổi tên">
-                            <Pencil size={14} />
-                        </button>
                     </div>
                     
                     {me && isSpectator ? (
@@ -1414,84 +1409,19 @@ const App: React.FC = () => {
                 </div>
               </div>
             )}
-            
-            {/* Chat Box */}
-            <ChatBox 
-                messages={chatMessages} 
-                currentPlayerId={playerId} 
-                onSendMessage={(text) => sendChatMessage(text)}
-                isOpen={isChatOpen}
-                setIsOpen={setIsChatOpen}
-                unreadCount={unreadChatCount}
-            />
           </div>
         )}
 
-        {/* Rename Modal */}
-        {isRenameModalOpen && (
-            <div className="overlay">
-                <div className="modal animate-in fade-in zoom-in" style={{maxWidth: '28rem', padding: '0', overflow: 'hidden', border: 'none', borderRadius: '1rem'}}>
-                    {/* Header */}
-                    <div style={{background: 'var(--primary)', color: 'white', padding: '1.25rem 1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'}}>
-                         <div style={{display: 'flex', alignItems: 'center', gap: '0.75rem'}}>
-                            <div style={{background: 'rgba(255,255,255,0.2)', padding: '0.5rem', borderRadius: '50%', display: 'flex'}}>
-                                <UserCircle2 size={24} color="white" />
-                            </div>
-                            <h3 className="text-lg font-extrabold" style={{margin: 0, letterSpacing: '0.025em'}}>CẬP NHẬT HỒ SƠ</h3>
-                         </div>
-                         <button onClick={() => setIsRenameModalOpen(false)} style={{background: 'transparent', border: 'none', color: 'white', cursor: 'pointer', opacity: 0.8, transition: 'opacity 0.2s', padding: '0.25rem', display: 'flex'}} className="hover:opacity-100">
-                            <X size={24} />
-                         </button>
-                    </div>
-                    
-                    {/* Body */}
-                    <div style={{padding: '2rem'}}>
-                        <form onSubmit={handleRenameSubmit}>
-                            <div className="mb-4">
-                                <label className="block text-sm font-bold text-muted mb-2" style={{textTransform: 'uppercase', letterSpacing: '0.05em'}}>Tên hiển thị mới</label>
-                                <div className="input-wrapper" style={{position: 'relative'}}>
-                                    <input 
-                                        type="text"
-                                        className="form-input"
-                                        value={renameValue}
-                                        onChange={(e) => setRenameValue(e.target.value)}
-                                        autoFocus
-                                        maxLength={20}
-                                        placeholder="Nhập tên của bạn..."
-                                        style={{
-                                            fontSize: '1.1rem', 
-                                            padding: '1rem 1rem 1rem 3rem',
-                                            width: '100%',
-                                            border: '2px solid #e5e7eb',
-                                            borderRadius: '0.75rem',
-                                            outline: 'none',
-                                            transition: 'all 0.2s'
-                                        }}
-                                        onFocus={(e) => e.target.style.borderColor = 'var(--primary)'}
-                                        onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
-                                    />
-                                    <div style={{position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', color: '#9ca3af', pointerEvents: 'none'}}>
-                                        <Pencil size={20} />
-                                    </div>
-                                </div>
-                                <p style={{fontSize: '0.8rem', color: '#6b7280', marginTop: '0.75rem', display: 'flex', gap: '0.25rem'}}>
-                                    <span style={{color: 'var(--primary)'}}>*</span> Tên này sẽ hiển thị trên bảng xếp hạng và vé của bạn.
-                                </p>
-                            </div>
-                            
-                            <div className="flex gap-3 justify-end mt-8">
-                                <button type="button" onClick={() => setIsRenameModalOpen(false)} className="btn" style={{background: '#f3f4f6', color: '#4b5563', border: '1px solid #e5e7eb'}}>
-                                    Hủy Bỏ
-                                </button>
-                                <button type="submit" disabled={!renameValue.trim()} className="btn btn-primary" style={{flex: 1, boxShadow: '0 4px 6px -1px rgba(220, 38, 38, 0.3)'}}>
-                                    <Save size={20} /> Lưu Thay Đổi
-                                </button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-            </div>
-        )}
+        {/* Chat Box - Moved to main container to be visible in all states except lobby */}
+        <ChatBox 
+            messages={chatMessages} 
+            currentPlayerId={playerId} 
+            onSendMessage={(text) => sendChatMessage(text)}
+            isOpen={isChatOpen}
+            setIsOpen={setIsChatOpen}
+            unreadCount={unreadChatCount}
+        />
+        
       </main>
     </div>
   );
