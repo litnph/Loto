@@ -43,8 +43,14 @@ const App: React.FC = () => {
   const clientRef = useRef<mqtt.MqttClient | null>(null);
   const callIntervalRef = useRef<any>(null);
   const gameStateRef = useRef(gameState);
+  
+  // Refs for stable access inside callbacks to prevent stale closures/race conditions
+  const playerIdRef = useRef(playerId);
+  const isConnectingRef = useRef(isConnecting);
 
   useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
+  useEffect(() => { playerIdRef.current = playerId; }, [playerId]);
+  useEffect(() => { isConnectingRef.current = isConnecting; }, [isConnecting]);
 
   useEffect(() => {
     return () => {
@@ -141,7 +147,7 @@ const App: React.FC = () => {
 
         client.on('connect', () => {
             console.log('MQTT Connected');
-            setIsConnecting(false);
+            // Do NOT setIsConnecting(false) here yet for guests, wait for first valid state
             onConnect();
         });
 
@@ -162,14 +168,18 @@ const App: React.FC = () => {
 
   const createRoom = async (playerName: string) => {
     setIsConnecting(true);
+    isConnectingRef.current = true; // Sync ref immediately
     setConnectionError('');
     if (clientRef.current) clientRef.current.end();
 
     const shortCode = Math.random().toString(36).substring(2, 7).toUpperCase();
     const myId = `host-${Date.now()}`;
+    
     setPlayerId(myId);
+    playerIdRef.current = myId; // Sync ref immediately
 
     const client = setupMqttClient(myId, () => {
+        setIsConnecting(false); // Host connects immediately
         const mySheet = generateTicket(TICKET_COLORS[0]);
         const hostPlayer: Player = {
             id: myId,
@@ -213,14 +223,16 @@ const App: React.FC = () => {
 
   const joinRoom = (playerName: string, roomCode: string) => {
     setIsConnecting(true);
+    isConnectingRef.current = true; // Sync ref immediately
     setConnectionError('');
     if (clientRef.current) clientRef.current.end();
 
     const myId = `player-${Date.now()}`;
     setPlayerId(myId);
+    playerIdRef.current = myId; // Sync ref immediately
 
     const joinTimeout = setTimeout(() => {
-        if (isConnecting) {
+        if (isConnectingRef.current) {
             setConnectionError("Không tìm thấy phòng hoặc mạng chậm. Hãy kiểm tra lại mã phòng.");
             setIsConnecting(false);
             if (clientRef.current) clientRef.current.end();
@@ -512,18 +524,32 @@ const App: React.FC = () => {
               markedNumbers: new Set<number>(p.markedNumbers as number[])
           }));
 
-          // Check if I was kicked/removed
-          if (!hydratedPlayers.find(p => p.id === playerId)) {
-              alert("Bạn đã bị mời ra khỏi phòng hoặc phòng đã đóng.");
-              leaveRoom();
-              return;
+          const myId = playerIdRef.current;
+          const amInList = hydratedPlayers.find(p => p.id === myId);
+
+          // FIX RACE CONDITION:
+          // If I am NOT in the list, but I am still "Connecting" (waiting for host to process join),
+          // then this is likely an old Retained Message from the broker. Ignore it.
+          // Only treat it as a "Kick" if I was already connected and stable.
+          if (!amInList) {
+              if (isConnectingRef.current) {
+                  return; // Ignore this update, wait for the one with my name
+              } else {
+                  alert("Bạn đã bị mời ra khỏi phòng hoặc phòng đã đóng.");
+                  leaveRoom();
+                  return;
+              }
+          }
+
+          // If found, I am successfully connected
+          if (isConnectingRef.current) {
+              setIsConnecting(false);
           }
 
           setGameState({
               ...remoteState,
               players: hydratedPlayers,
           });
-          setIsConnecting(false);
       } catch (e) {
           console.error("Error parsing guest message", e);
       }
