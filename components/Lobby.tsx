@@ -17,10 +17,11 @@ const Lobby: React.FC<LobbyProps> = ({ onCreateRoom, onJoinRoom, isCreating }) =
     if (!name.trim()) return;
 
     if (mode === 'create') {
-      onCreateRoom(name);
+      onCreateRoom(name.trim());
     } else {
-      if (roomCode.trim()) {
-        onJoinRoom(name, roomCode);
+      const cleanCode = roomCode.trim().toUpperCase();
+      if (cleanCode) {
+        onJoinRoom(name.trim(), cleanCode);
       }
     }
   };

@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { generateTicket, checkWin, checkWaiting, formatCurrency } from './utils/gameUtils';
-import { Player, RoomState, GameStatus, TOTAL_NUMBERS, CALL_INTERVAL_MS, TICKET_COLORS, TicketData } from './types';
+import { Player, RoomState, GameStatus, TOTAL_NUMBERS, CALL_INTERVAL_MS, TICKET_COLORS, TicketData, ChatMessage } from './types';
 import Lobby from './components/Lobby';
 import Ticket from './components/Ticket';
 import NumberBoard from './components/NumberBoard';
+import ChatBox from './components/ChatBox';
 import { generateMCCommentary } from './services/geminiService';
 import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, Palette, Shuffle, X, Settings2, Flame, Coins, Plus, Eye, Trash2, Mic, LogOut, Pencil, Save } from 'lucide-react';
 import mqtt from 'mqtt';
@@ -33,6 +34,11 @@ const App: React.FC = () => {
   const [connectionError, setConnectionError] = useState('');
   const [isMuted, setIsMuted] = useState(false);
   
+  // Chat States
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [unreadChatCount, setUnreadChatCount] = useState(0);
+
   // UI States
   const [activeSheetIndexForColor, setActiveSheetIndexForColor] = useState<number | null>(null);
   const [isRenameModalOpen, setIsRenameModalOpen] = useState(false);
@@ -53,9 +59,20 @@ const App: React.FC = () => {
   // CRITICAL FIX: Local Source of Truth for marked numbers to prevent race conditions on fast clicks
   const localMarkedNumbersRef = useRef<Set<number>>(new Set());
 
+  // Ref for chat open status to use inside callbacks
+  const isChatOpenRef = useRef(isChatOpen);
+
   useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
   useEffect(() => { playerIdRef.current = playerId; }, [playerId]);
   useEffect(() => { isConnectingRef.current = isConnecting; }, [isConnecting]);
+  useEffect(() => { isChatOpenRef.current = isChatOpen; }, [isChatOpen]);
+
+  // Reset unread count when chat opens
+  useEffect(() => {
+    if (isChatOpen) {
+        setUnreadChatCount(0);
+    }
+  }, [isChatOpen]);
 
   // Reset local marks ref when starting new game or changing player
   useEffect(() => {
@@ -143,6 +160,7 @@ const App: React.FC = () => {
   // --- MQTT Helpers ---
   const getHostTopic = (code: string) => `${TOPIC_PREFIX}/${code}/host`;
   const getClientTopic = (code: string) => `${TOPIC_PREFIX}/${code}/client`;
+  const getChatTopic = (code: string) => `${TOPIC_PREFIX}/${code}/chat`;
 
   const setupMqttClient = useCallback((clientId: string, onConnect: () => void) => {
     try {
@@ -223,18 +241,27 @@ const App: React.FC = () => {
         };
 
         setGameState(initialState);
-        client.subscribe(getClientTopic(shortCode), (err) => {
+        setChatMessages([]); // Reset chat
+        client.subscribe([getClientTopic(shortCode), getChatTopic(shortCode)], (err) => {
             if (!err) publishState(client, shortCode, initialState);
         });
     });
 
     if (client) {
-        client.on('message', (topic, message) => handleHostMessage(topic, message));
+        client.on('message', (topic, message) => {
+            if (topic === getChatTopic(shortCode)) {
+                handleChatMessage(message);
+            } else {
+                handleHostMessage(topic, message);
+            }
+        });
         clientRef.current = client;
     }
   };
 
-  const joinRoom = (playerName: string, roomCode: string) => {
+  const joinRoom = (playerName: string, roomCodeInput: string) => {
+    const roomCode = roomCodeInput.trim().toUpperCase();
+    
     setIsConnecting(true);
     isConnectingRef.current = true; // Sync ref immediately
     setConnectionError('');
@@ -253,7 +280,10 @@ const App: React.FC = () => {
     }, 10000);
 
     const client = setupMqttClient(myId, () => {
-        client.subscribe(getHostTopic(roomCode), (err) => {
+        // Optimistically set code to ensure chat topic generation works locally immediately
+        setGameState(prev => ({ ...prev, code: roomCode }));
+
+        client.subscribe([getHostTopic(roomCode), getChatTopic(roomCode)], (err) => {
             if (!err) {
                  const randomColor = TICKET_COLORS[Math.floor(Math.random() * TICKET_COLORS.length)];
                  const mySheet = generateTicket(randomColor);
@@ -281,8 +311,14 @@ const App: React.FC = () => {
 
     if (client) {
         client.on('message', (topic, message) => {
+            // IMPORTANT: clearTimeout on FIRST message (either state or chat)
             clearTimeout(joinTimeout);
-            handleGuestMessage(topic, message);
+            
+            if (topic === getChatTopic(roomCode)) {
+                handleChatMessage(message);
+            } else {
+                handleGuestMessage(topic, message);
+            }
         });
         clientRef.current = client;
     }
@@ -303,8 +339,11 @@ const App: React.FC = () => {
       
       // Reset state
       setGameState(INITIAL_STATE);
+      setChatMessages([]);
       setPlayerId('');
       setIsConnecting(false);
+      setUnreadChatCount(0);
+      setIsChatOpen(false);
   };
 
   const kickPlayer = (targetPlayerId: string) => {
@@ -458,6 +497,19 @@ const App: React.FC = () => {
       client.publish(getHostTopic(code), payload, { retain: true, qos: 0 }); // Use QoS 0 for speed
   };
 
+  const handleChatMessage = (message: any) => {
+      try {
+          const chatMsg: ChatMessage = JSON.parse(message.toString());
+          setChatMessages(prev => [...prev, chatMsg]);
+          
+          if (!isChatOpenRef.current) {
+              setUnreadChatCount(prev => prev + 1);
+          }
+      } catch (e) {
+          console.error("Error parsing chat message", e);
+      }
+  };
+
   const handleHostMessage = (topic: string, message: any) => {
       try {
           const data = JSON.parse(message.toString());
@@ -479,12 +531,17 @@ const App: React.FC = () => {
                   newState.players = [...currentState.players, newPlayer];
                   shouldUpdateLocal = true;
                   shouldBroadcast = true; // Always broadcast join
+                  
+                  // Send system chat message
+                  sendChatMessage(`đã tham gia phòng`, true, newPlayer.name);
               }
           } 
           else if (data.type === 'PLAYER_LEAVE') {
+              const pName = currentState.players.find(p => p.id === data.playerId)?.name;
               newState.players = currentState.players.filter(p => p.id !== data.playerId);
               shouldUpdateLocal = true;
               shouldBroadcast = true;
+              if (pName) sendChatMessage(`đã rời phòng`, true, pName);
           }
           else if (data.type === 'MARK_UPDATE') {
               // OPTIMIZATION: Only broadcast if Waiting status CHANGED
@@ -609,6 +666,26 @@ const App: React.FC = () => {
           });
       } catch (e) {
           console.error("Error parsing guest message", e);
+      }
+  };
+
+  const sendChatMessage = (text: string, isSystem = false, systemName = '') => {
+      const me = gameStateRef.current.players.find(p => p.id === playerIdRef.current);
+      if (!me && !isSystem) return;
+
+      const msg: ChatMessage = {
+          id: Date.now().toString() + Math.random(),
+          playerId: isSystem ? 'system' : me!.id,
+          playerName: isSystem ? (systemName || 'Hệ thống') : me!.name,
+          text: text,
+          timestamp: Date.now(),
+          isSystem
+      };
+
+      if (clientRef.current) {
+          // Use current state code if available, otherwise assume we are in setup phase
+          const topic = getChatTopic(gameStateRef.current.code);
+          clientRef.current.publish(topic, JSON.stringify(msg));
       }
   };
 
@@ -1336,6 +1413,16 @@ const App: React.FC = () => {
                 </div>
               </div>
             )}
+            
+            {/* Chat Box */}
+            <ChatBox 
+                messages={chatMessages} 
+                currentPlayerId={playerId} 
+                onSendMessage={(text) => sendChatMessage(text)}
+                isOpen={isChatOpen}
+                setIsOpen={setIsChatOpen}
+                unreadCount={unreadChatCount}
+            />
           </div>
         )}
 

@@ -28,6 +28,15 @@ export interface Player {
   status: PlayerStatus; // Playing or just watching (late joiners)
 }
 
+export interface ChatMessage {
+  id: string;
+  playerId: string;
+  playerName: string;
+  text: string;
+  timestamp: number;
+  isSystem?: boolean; // For system notifications like "Player joined"
+}
+
 export type GameStatus = 'lobby' | 'waiting' | 'playing' | 'ended';
 
 export interface RoomState {
@@ -46,7 +55,7 @@ export interface RoomState {
 }
 
 export const TOTAL_NUMBERS = 90;
-export const CALL_INTERVAL_MS = 6000;
+export const CALL_INTERVAL_MS = 2000;
 
 export const TICKET_COLORS = [
   '#dc2626', // Red
