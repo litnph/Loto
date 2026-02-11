@@ -310,6 +310,16 @@
         grid-template-columns: 1fr;
         gap: 1.5rem;
       }
+      /* Special styling for single ticket to center it */
+      .ticket-grid.single-ticket {
+        display: flex;
+        justify-content: center;
+      }
+      .ticket-grid.single-ticket > div {
+        width: 100%;
+        max-width: 500px;
+      }
+      
       .ticket-container {
         background: var(--white);
         padding: 0.5rem;
@@ -476,7 +486,7 @@
         padding: 2rem;
         border-radius: 1.5rem;
         text-align: center;
-        max-width: 50rem; /* Increased to fit number board */
+        max-width: 50rem;
         width: 95%;
         box-shadow: var(--shadow-lg);
         border: 4px solid var(--secondary);
@@ -494,6 +504,21 @@
         justify-content: center;
         margin: 0 auto 1.5rem auto;
         color: var(--secondary-dark);
+      }
+      
+      /* New Modal Layout Classes */
+      .modal-body-flex {
+        display: flex;
+        flex-direction: column;
+        gap: 1.5rem;
+      }
+      .modal-left, .modal-right {
+        flex: 1;
+      }
+      .modal-board-section {
+        margin-bottom: 1.5rem; 
+        border-top: 2px dashed #e5e7eb; 
+        padding-top: 1.5rem;
       }
 
       /* Color Picker Grid */
@@ -556,10 +581,38 @@
       /* Responsive */
       @media (min-width: 1024px) {
         .grid-layout {
-          grid-template-columns: 2fr 1fr; /* Adjusted for better balance with wide tickets */
+          grid-template-columns: 2fr 1fr; 
         }
         .ticket-grid {
-            grid-template-columns: repeat(2, 1fr); /* 2 columns for tickets on desktop */
+            grid-template-columns: repeat(2, 1fr); 
+        }
+        /* Modal desktop layout */
+        .modal {
+          max-width: 65rem; /* Wider modal for side-by-side */
+          text-align: left;
+        }
+        .modal-body-flex {
+          flex-direction: row;
+          align-items: stretch;
+        }
+        .modal-left {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          text-align: center;
+          border-right: 2px dashed #e5e7eb;
+          padding-right: 1.5rem;
+        }
+        .modal-right {
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+        }
+        .modal-board-section {
+          border-top: none;
+          padding-top: 0;
+          margin-bottom: 0;
         }
       }
       

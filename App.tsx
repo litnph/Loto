@@ -745,7 +745,7 @@ const App: React.FC = () => {
                                 <h3 className="font-bold">Bộ Vé Của Bạn ({me.sheets.length} Lá)</h3>
                             </div>
                             
-                            <div className="ticket-grid">
+                            <div className={`ticket-grid ${me.sheets.length === 1 ? 'single-ticket' : ''}`}>
                                 {me.sheets.map((sheet, idx) => (
                                     <div key={sheet.id} style={{position: 'relative'}}>
                                          <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem'}}>
@@ -893,7 +893,7 @@ const App: React.FC = () => {
                              <p className="text-gray-500">Bạn vào sau khi ván đã bắt đầu. Vui lòng đợi ván sau nhé!</p>
                         </div>
                     ) : (
-                        <div className="ticket-grid">
+                        <div className={`ticket-grid ${me && me.sheets.length === 1 ? 'single-ticket' : ''}`}>
                             {me && me.sheets.map((sheet, idx) => (
                                 <div key={sheet.id} style={{marginBottom: '1rem'}}>
                                     <div className="text-xs font-bold text-muted mb-1 ml-1">Lá {idx + 1}</div>
@@ -1029,42 +1029,52 @@ const App: React.FC = () => {
             {gameState.status === 'ended' && gameState.winner && (
               <div className="overlay">
                 <div className="modal animate-in fade-in zoom-in">
-                  <div className="modal-icon animate-bounce">
-                    <Trophy size={48} style={{color: '#ca8a04'}} />
-                  </div>
-                  <h2 style={{fontSize: '2.25rem', fontWeight: '800', color: '#dc2626', marginBottom: '0.5rem', textTransform: 'uppercase'}}>Chiến Thắng!</h2>
-                  <p style={{color: '#4b5563', fontSize: '1.125rem', marginBottom: '0.5rem'}}>
-                    Chúc mừng <span style={{fontWeight: 'bold', color: 'black'}}>{gameState.winner.name}</span> đã Kinh!
-                  </p>
-                  <p style={{fontSize: '1.25rem', color: '#16a34a', fontWeight: 'bold', marginBottom: '1.5rem'}}>
-                      + {formatCurrency(gameState.players.find(p => p.id === gameState.winner?.id)?.balance || 0)}
-                  </p>
+                  <h2 style={{fontSize: '2.25rem', fontWeight: '800', color: '#dc2626', marginBottom: '1.5rem', textTransform: 'uppercase', textAlign: 'center'}}>
+                      Chiến Thắng!
+                  </h2>
                   
-                  <div style={{marginBottom: '2rem'}}>
-                      <p style={{fontSize: '0.875rem', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em'}}>Hàng Số Chiến Thắng</p>
-                      <div className="win-numbers-grid">
-                          {gameState.winningNumbers.sort((a,b) => a-b).map(num => (
-                              <div key={num} className="win-number-ball">{num}</div>
-                          ))}
+                  <div className="modal-body-flex">
+                      <div className="modal-left">
+                          <div className="modal-icon animate-bounce">
+                            <Trophy size={48} style={{color: '#ca8a04'}} />
+                          </div>
+                          <p style={{color: '#4b5563', fontSize: '1.125rem', marginBottom: '0.5rem'}}>
+                            Chúc mừng <span style={{fontWeight: 'bold', color: 'black'}}>{gameState.winner.name}</span> đã Kinh!
+                          </p>
+                          <p style={{fontSize: '1.25rem', color: '#16a34a', fontWeight: 'bold', marginBottom: '1.5rem'}}>
+                              + {formatCurrency(gameState.players.find(p => p.id === gameState.winner?.id)?.balance || 0)}
+                          </p>
+                          
+                          <div style={{marginBottom: '2rem'}}>
+                              <p style={{fontSize: '0.875rem', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em'}}>Hàng Số Chiến Thắng</p>
+                              <div className="win-numbers-grid">
+                                  {gameState.winningNumbers.sort((a,b) => a-b).map(num => (
+                                      <div key={num} className="win-number-ball">{num}</div>
+                                  ))}
+                              </div>
+                          </div>
+                          
+                          {isHost ? (
+                              <button onClick={resetGame} className="btn btn-primary w-full" style={{padding: '1rem', fontSize: '1.1rem'}}>
+                                <RefreshCw size={20} /> Chơi Ván Mới
+                              </button>
+                          ) : (
+                              <div style={{display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', color: '#6b7280'}}>
+                                  <Loader2 className="animate-spin" size={16} /> <span>Chờ chủ phòng bắt đầu lại...</span>
+                              </div>
+                          )}
+                      </div>
+                      
+                      <div className="modal-right">
+                          <div className="modal-board-section">
+                               <p style={{fontSize: '0.875rem', color: '#6b7280', marginBottom: '0.5rem', textAlign: 'center'}}>Bảng Số Đã Gọi</p>
+                               <div style={{transform: 'scale(0.95)', transformOrigin: 'top center'}}>
+                                 <NumberBoard calledNumbers={gameState.calledNumbers} currentNumber={null} />
+                               </div>
+                          </div>
                       </div>
                   </div>
 
-                  <div style={{marginBottom: '1.5rem', borderTop: '2px dashed #e5e7eb', paddingTop: '1.5rem'}}>
-                       <p style={{fontSize: '0.875rem', color: '#6b7280', marginBottom: '0.5rem'}}>Bảng Số Đã Gọi</p>
-                       <div style={{transform: 'scale(0.9)', transformOrigin: 'top center'}}>
-                         <NumberBoard calledNumbers={gameState.calledNumbers} currentNumber={null} />
-                       </div>
-                  </div>
-                  
-                  {isHost ? (
-                      <button onClick={resetGame} className="btn btn-primary w-full" style={{padding: '1rem', fontSize: '1.1rem'}}>
-                        <RefreshCw size={20} /> Chơi Ván Mới
-                      </button>
-                  ) : (
-                      <div style={{display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', color: '#6b7280'}}>
-                          <Loader2 className="animate-spin" size={16} /> <span>Chờ chủ phòng bắt đầu lại...</span>
-                      </div>
-                  )}
                 </div>
               </div>
             )}
