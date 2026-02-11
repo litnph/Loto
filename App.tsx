@@ -58,11 +58,14 @@ const App: React.FC = () => {
   useEffect(() => {
     const loadVoices = () => {
       const vs = window.speechSynthesis.getVoices();
-      setVoices(vs);
+      if (vs.length > 0) {
+        setVoices(vs);
+      }
     };
 
     // Chrome loads voices asynchronously
     window.speechSynthesis.onvoiceschanged = loadVoices;
+    // Initial attempt
     loadVoices();
 
     return () => {
@@ -73,26 +76,34 @@ const App: React.FC = () => {
   const speakText = useCallback((text: string) => {
     if (isMuted || !window.speechSynthesis) return;
     
-    // Cancel any ongoing speech
+    // Cancel any ongoing speech to prevent queue buildup
     window.speechSynthesis.cancel();
 
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'vi-VN'; // Hint for Vietnamese
     
-    // Search for a specific Vietnamese voice
-    // Prioritize Google's Vietnamese voice or similar if available
-    const viVoice = voices.find(v => 
-        v.lang.toLowerCase().includes('vi') || 
-        v.name.toLowerCase().includes('vietnam') || 
-        v.name.toLowerCase().includes('tiếng việt')
-    );
+    // FORCE LANG CODE: This is crucial for iOS/Safari even if no voice object is set
+    utterance.lang = 'vi-VN'; 
+    
+    // Get voices dynamically if state is empty (handling race conditions)
+    let availableVoices = voices;
+    if (availableVoices.length === 0) {
+        availableVoices = window.speechSynthesis.getVoices();
+    }
+
+    // Strict search for Vietnamese
+    // 1. Priority: Google's Online Voice (Chrome)
+    // 2. Priority: Microsoft's Online Voice (Edge)
+    // 3. Fallback: Any voice with 'vi' or 'vietnam' in ID/Name/Lang
+    const viVoice = availableVoices.find(v => v.name === 'Google Tiếng Việt') || 
+                    availableVoices.find(v => v.name.includes('Vietnamese') || v.name.includes('Tiếng Việt')) ||
+                    availableVoices.find(v => v.lang.includes('vi'));
 
     if (viVoice) {
         utterance.voice = viVoice;
     }
     
-    // Adjust rate for "Loto" style (slightly slower, clearer)
-    utterance.rate = 0.9; 
+    // Adjust rate: slightly slower for Bingo to be clear
+    utterance.rate = 0.85; 
     utterance.pitch = 1.0;
 
     window.speechSynthesis.speak(utterance);
