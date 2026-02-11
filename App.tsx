@@ -56,16 +56,27 @@ const App: React.FC = () => {
   useEffect(() => {
     const loadVoices = () => {
       const vs = window.speechSynthesis.getVoices();
+      
       if (vs.length > 0) {
         setVoices(vs);
+        
+        // Debugging logs based on user request
+        const vnVoices = vs.filter(v => v.lang === "vi-VN");
+        console.log("Vietnamese voices:", vnVoices);
+
         if (!selectedVoiceURI) {
-            // Priority: Google Tiếng Việt (Chrome) -> Microsoft HoaiMy (Edge) -> Generic Vietnamese
+            // Priority: Google Tiếng Việt (Chrome) -> Microsoft HoaiMy (Edge) -> Generic vi-VN -> Any 'vi'
             const viVoice = vs.find(v => v.name === 'Google Tiếng Việt') || 
                             vs.find(v => v.name.includes('HoaiMy')) || 
-                            vs.find(v => v.name.includes('Vietnamese') || v.name.includes('Tiếng Việt')) ||
+                            vs.find(v => v.lang === 'vi-VN') || 
                             vs.find(v => v.lang.includes('vi'));
-            if (viVoice) setSelectedVoiceURI(viVoice.voiceURI);
-            else if (vs.length > 0) setSelectedVoiceURI(vs[0].voiceURI);
+            
+            if (viVoice) {
+                console.log("Auto-selected voice:", viVoice.name);
+                setSelectedVoiceURI(viVoice.voiceURI);
+            } else if (vs.length > 0) {
+                setSelectedVoiceURI(vs[0].voiceURI);
+            }
         }
       }
     };
@@ -950,7 +961,12 @@ const App: React.FC = () => {
                                     style={{border: 'none', background: 'transparent', color: '#6b7280', maxWidth: '140px', fontSize: '0.75rem', cursor: 'pointer', outline: 'none', textOverflow: 'ellipsis'}}
                                 >
                                     {voices.length === 0 && <option value="">Đang tải giọng...</option>}
-                                    {voices.map(v => <option key={v.voiceURI} value={v.voiceURI}>{v.name.slice(0, 25)}{v.name.length > 25 ? '...' : ''}</option>)}
+                                    {[...voices].sort((a, b) => {
+                                        // Prioritize 'vi-VN' or 'vi' lang
+                                        const aVi = a.lang.includes('vi') ? 1 : 0;
+                                        const bVi = b.lang.includes('vi') ? 1 : 0;
+                                        return bVi - aVi;
+                                    }).map(v => <option key={v.voiceURI} value={v.voiceURI}>{v.name.slice(0, 25)}{v.name.length > 25 ? '...' : ''}</option>)}
                                 </select>
                                 <button onClick={handleTestVoice} className="p-1 rounded hover:bg-gray-200" title="Test loa"><Mic size={12}/></button>
                             </div>
