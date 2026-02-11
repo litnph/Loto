@@ -5,7 +5,7 @@ import Lobby from './components/Lobby';
 import Ticket from './components/Ticket';
 import NumberBoard from './components/NumberBoard';
 import { generateMCCommentary } from './services/geminiService';
-import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, Palette, Shuffle, X, Settings2, Flame, Coins, Plus, Eye, Trash2, Mic, LogOut } from 'lucide-react';
+import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, Palette, Shuffle, X, Settings2, Flame, Coins, Plus, Eye, Trash2, Mic, LogOut, Pencil, Save } from 'lucide-react';
 import mqtt from 'mqtt';
 
 const BROKER_URL = 'wss://broker.emqx.io:8084/mqtt'; 
@@ -35,6 +35,8 @@ const App: React.FC = () => {
   
   // UI States
   const [activeSheetIndexForColor, setActiveSheetIndexForColor] = useState<number | null>(null);
+  const [isRenameModalOpen, setIsRenameModalOpen] = useState(false);
+  const [renameValue, setRenameValue] = useState('');
 
   // Audio state
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
@@ -47,10 +49,24 @@ const App: React.FC = () => {
   // Refs for stable access inside callbacks to prevent stale closures/race conditions
   const playerIdRef = useRef(playerId);
   const isConnectingRef = useRef(isConnecting);
+  
+  // CRITICAL FIX: Local Source of Truth for marked numbers to prevent race conditions on fast clicks
+  const localMarkedNumbersRef = useRef<Set<number>>(new Set());
 
   useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
   useEffect(() => { playerIdRef.current = playerId; }, [playerId]);
   useEffect(() => { isConnectingRef.current = isConnecting; }, [isConnecting]);
+
+  // Reset local marks ref when starting new game or changing player
+  useEffect(() => {
+     if (gameState.status === 'waiting') {
+         localMarkedNumbersRef.current.clear();
+     }
+  }, [gameState.status]);
+
+  useEffect(() => {
+     localMarkedNumbersRef.current.clear();
+  }, [playerId]);
 
   useEffect(() => {
     return () => {
@@ -101,9 +117,6 @@ const App: React.FC = () => {
     
     // Optimization: Don't interrupt if it's the exact same text (reduces choppy audio)
     if (window.speechSynthesis.speaking) {
-         // Optionally cancel here if you want high responsiveness, 
-         // but for "mượt mà", letting short phrases finish is sometimes better.
-         // However, in Loto, new number is priority.
          window.speechSynthesis.cancel();
     }
 
@@ -316,23 +329,44 @@ const App: React.FC = () => {
     updatePlayerLocallyAndBroadcast(playerId, { isReady: newReadyStatus });
   };
 
+  // --- Rename Features ---
+  const handleOpenRename = () => {
+    const me = gameState.players.find(p => p.id === playerId);
+    if (me) {
+        setRenameValue(me.name);
+        setIsRenameModalOpen(true);
+    }
+  };
+
+  const handleRenameSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (renameValue.trim()) {
+        updatePlayerLocallyAndBroadcast(playerId, { name: renameValue.trim() });
+        setIsRenameModalOpen(false);
+    }
+  };
+
   const updatePlayerLocallyAndBroadcast = (pId: string, changes: Partial<Player>) => {
+      const myId = playerIdRef.current;
+      const currentRefState = gameStateRef.current;
+
       // Update Local
       setGameState(prev => {
           const updatedPlayers = prev.players.map(p => p.id === pId ? { ...p, ...changes } : p);
           const newState = { ...prev, players: updatedPlayers };
-          // If I am host, broadcast state
-          const me = prev.players.find(p => p.id === playerId);
+          // If I am host, broadcast state using LATEST ref data
+          const me = prev.players.find(p => p.id === myId);
           if (me?.isHost && clientRef.current) {
               publishState(clientRef.current, prev.code, newState);
           }
           return newState;
       });
 
-      // If I am guest, send update request
-      const me = gameState.players.find(p => p.id === playerId);
-      if (!me?.isHost && clientRef.current) {
-           clientRef.current.publish(getClientTopic(gameState.code), JSON.stringify({
+      // If I am guest, send update request using LATEST ref data
+      // We use currentRefState instead of gameState closure to avoid staleness
+      const me = currentRefState.players.find(p => p.id === myId);
+      if (me && !me.isHost && clientRef.current) {
+           clientRef.current.publish(getClientTopic(currentRefState.code), JSON.stringify({
               type: 'PLAYER_UPDATE',
               playerId: pId,
               changes: changes
@@ -349,6 +383,7 @@ const App: React.FC = () => {
       newSheets[index] = generateTicket(newSheets[index].color);
       
       updatePlayerLocallyAndBroadcast(playerId, { sheets: newSheets, markedNumbers: new Set() });
+      localMarkedNumbersRef.current.clear(); // Clear local marks if sheets change
   };
 
   const handleSheetColorChange = (index: number, color: string) => {
@@ -382,6 +417,7 @@ const App: React.FC = () => {
           sheetCount: newSheets.length,
           markedNumbers: new Set()
       });
+      localMarkedNumbersRef.current.clear();
   };
 
   const handleRemoveSheet = (index: number) => {
@@ -395,6 +431,7 @@ const App: React.FC = () => {
           sheetCount: newSheets.length,
           markedNumbers: new Set()
       });
+      localMarkedNumbersRef.current.clear();
   };
 
   const handleUpdateBetPrice = (newPrice: number) => {
@@ -544,6 +581,10 @@ const App: React.FC = () => {
           // If found, I am successfully connected
           if (isConnectingRef.current) {
               setIsConnecting(false);
+              // Sync local marked numbers ref with what server has (in case of re-join)
+              if (amInList) {
+                  localMarkedNumbersRef.current = new Set(amInList.markedNumbers);
+              }
           }
 
           setGameState({
@@ -668,28 +709,46 @@ const App: React.FC = () => {
 
   // --- User Interaction ---
 
-  const handleMarkNumber = (num: number) => {
-    if (gameState.status !== 'playing') return;
-    if (!gameState.calledNumbers.includes(num)) {
+  const handleMarkNumber = useCallback((num: number) => {
+    const currentGameState = gameStateRef.current;
+    if (currentGameState.status !== 'playing') return;
+    
+    const myPId = playerIdRef.current;
+    const me = currentGameState.players.find(p => p.id === myPId);
+
+    if (!me || me.status === 'spectating') return;
+
+    // Use local ref as source of truth for current interaction
+    const isMarkedLocal = localMarkedNumbersRef.current.has(num);
+
+    // FIX: Always allow UNMARKING (fixing mistakes), even if calledNumbers is desynced.
+    // For MARKING, strictly check if called.
+    if (!isMarkedLocal && !currentGameState.calledNumbers.includes(num)) {
       alert("Số này chưa được gọi!");
       return;
     }
-    const me = gameState.players.find(p => p.id === playerId);
-    if (!me || me.status === 'spectating') return;
 
-    const newMarked = new Set<number>(me.markedNumbers);
-    if (newMarked.has(num)) newMarked.delete(num);
-    else newMarked.add(num);
-
+    // 1. Update LOCAL REF instantly (Atomic operation)
+    if (isMarkedLocal) {
+        localMarkedNumbersRef.current.delete(num);
+    } else {
+        localMarkedNumbersRef.current.add(num);
+    }
+    
+    // Create a new Set for React State to trigger re-render
+    const newMarked = new Set(localMarkedNumbersRef.current);
     const isWaiting = checkWaiting(me.sheets, newMarked);
 
+    // 2. Update React State Optimistically using Functional Update
+    // We use the 'newMarked' we just calculated from the Ref, ensuring
+    // we don't lose previous clicks even if 'prev' state was stale regarding the *logic*,
+    // but we use 'prev' to merge into the object structure correctly.
     setGameState(prev => {
       const updatedPlayers = prev.players.map(p => 
-        p.id === playerId ? { ...p, markedNumbers: newMarked, isWaiting: isWaiting } : p
+        p.id === myPId ? { ...p, markedNumbers: newMarked, isWaiting: isWaiting } : p
       );
       const newState = { ...prev, players: updatedPlayers };
       
-      // OPTIMIZATION: Host only broadcasts if Waiting status changed
       if (me.isHost && clientRef.current) {
           if (me.isWaiting !== isWaiting) {
               publishState(clientRef.current, prev.code, newState);
@@ -698,50 +757,51 @@ const App: React.FC = () => {
       return newState;
     });
 
+    // 3. Send MQTT update (Fire and Forget)
     if (!me.isHost && clientRef.current) {
-        // Guest always sends their update to Host, but Host won't echo it back instantly
-        clientRef.current.publish(getClientTopic(gameState.code), JSON.stringify({
+        clientRef.current.publish(getClientTopic(currentGameState.code), JSON.stringify({
             type: 'MARK_UPDATE',
-            playerId: playerId,
+            playerId: myPId,
             markedNumbers: Array.from(newMarked),
             isWaiting: isWaiting
         }));
     }
-  };
+  }, []); // Empty dependency array = stable function reference for Ticket memo
 
-  const handleKinhCall = () => {
-    const me = gameState.players.find(p => p.id === playerId);
+  const handleKinhCall = useCallback(() => {
+    const currentGameState = gameStateRef.current;
+    const myPId = playerIdRef.current;
+    const me = currentGameState.players.find(p => p.id === myPId);
+    
     if (!me || me.status === 'spectating') return;
 
     const winningRow = checkWin(me.sheets, me.markedNumbers);
 
     if (winningRow) {
         if (me.isHost) {
-             const currentState = gameStateRef.current;
              const newState = {
-                ...currentState,
+                ...currentGameState,
                 status: 'ended' as GameStatus,
                 winner: me,
                 winningNumbers: winningRow,
                 mcCommentary: `CHÚC MỪNG! ${me.name} ĐÃ KINH RỒI!`,
                 pot: 0,
-                players: currentState.players.map(p => 
-                  p.id === me.id ? { ...p, balance: p.balance + currentState.pot } : p
+                players: currentGameState.players.map(p => 
+                  p.id === me.id ? { ...p, balance: p.balance + currentGameState.pot } : p
                 )
              };
              
              setGameState(newState);
              speakText(newState.mcCommentary); 
              
-             // Host Wins -> Broadcast Immediately
-             if (clientRef.current) publishState(clientRef.current, currentState.code, newState);
+             if (clientRef.current) publishState(clientRef.current, currentGameState.code, newState);
              if (callIntervalRef.current) clearInterval(callIntervalRef.current);
 
         } else {
             if (clientRef.current) {
-                clientRef.current.publish(getClientTopic(gameState.code), JSON.stringify({
+                clientRef.current.publish(getClientTopic(currentGameState.code), JSON.stringify({
                     type: 'BINGO_CLAIM',
-                    playerId: playerId,
+                    playerId: myPId,
                     markedNumbers: Array.from(me.markedNumbers)
                 }));
             }
@@ -749,7 +809,7 @@ const App: React.FC = () => {
     } else {
       alert('Khoan đã! Bạn chưa đủ điều kiện KINH đâu nhé! Kiểm tra lại đi.');
     }
-  };
+  }, [speakText]);
 
   const resetGame = () => {
     const me = gameState.players.find(p => p.id === playerId);
@@ -877,7 +937,13 @@ const App: React.FC = () => {
                         <>
                         <div className="card" style={{padding: '1rem', borderTop: `4px solid ${me.color}`}}>
                             <div className="flex justify-between items-center mb-2">
-                                <h3 className="font-bold">Bộ Vé Của Bạn ({me.sheets.length} Lá)</h3>
+                                <div className="flex items-center gap-2">
+                                    <h3 className="font-bold">{me.name}</h3>
+                                    <button onClick={handleOpenRename} className="btn-icon" style={{width: '24px', height: '24px', padding: 0}} title="Đổi tên">
+                                        <Pencil size={14} />
+                                    </button>
+                                </div>
+                                <span className="text-sm font-bold text-muted">({me.sheets.length} Lá)</span>
                             </div>
                             
                             <div className={`ticket-grid ${me.sheets.length === 1 ? 'single-ticket' : ''}`}>
@@ -1032,6 +1098,9 @@ const App: React.FC = () => {
                     <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem'}}>
                         <UserCircle2 size={24} style={{color: me?.color || '#dc2626'}} /> 
                         <h3 className="font-bold" style={{fontSize: '1.25rem'}}>Vé Của Bạn ({me?.name})</h3>
+                        <button onClick={handleOpenRename} className="btn-icon" style={{width: '28px', height: '28px', marginLeft: '0.5rem'}} title="Đổi tên">
+                            <Pencil size={14} />
+                        </button>
                     </div>
                     
                     {me && isSpectator ? (
@@ -1232,6 +1301,39 @@ const App: React.FC = () => {
               </div>
             )}
           </div>
+        )}
+
+        {/* Rename Modal */}
+        {isRenameModalOpen && (
+            <div className="overlay">
+                <div className="modal" style={{maxWidth: '24rem', padding: '1.5rem'}}>
+                    <div className="flex justify-between items-center mb-4">
+                        <h3 className="text-lg font-bold">Đổi Tên Người Chơi</h3>
+                        <button className="btn-close" onClick={() => setIsRenameModalOpen(false)}><X size={20} /></button>
+                    </div>
+                    <form onSubmit={handleRenameSubmit}>
+                        <div className="mb-4">
+                            <label className="block text-sm font-medium mb-1">Tên hiển thị mới</label>
+                            <input 
+                                type="text"
+                                className="form-input"
+                                value={renameValue}
+                                onChange={(e) => setRenameValue(e.target.value)}
+                                autoFocus
+                                maxLength={20}
+                            />
+                        </div>
+                        <div className="flex gap-2 justify-end">
+                            <button type="button" onClick={() => setIsRenameModalOpen(false)} className="btn bg-gray-200">
+                                Hủy
+                            </button>
+                            <button type="submit" disabled={!renameValue.trim()} className="btn btn-primary">
+                                <Save size={18} /> Lưu Thay Đổi
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
         )}
       </main>
     </div>
