@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { generateTicket, checkWin } from './utils/gameUtils';
+import { generateTicket, checkWin, checkWaiting } from './utils/gameUtils';
 import { Player, RoomState, GameStatus, TOTAL_NUMBERS, CALL_INTERVAL_MS, TICKET_COLORS } from './types';
 import Lobby from './components/Lobby';
 import Ticket from './components/Ticket';
 import NumberBoard from './components/NumberBoard';
 import { generateMCCommentary } from './services/geminiService';
-import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, XCircle, Palette, Shuffle, X, Settings2 } from 'lucide-react';
+import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, XCircle, Palette, Shuffle, X, Settings2, Flame } from 'lucide-react';
 import mqtt from 'mqtt';
 
 // Sử dụng Public Broker có hỗ trợ WebSockets Secure (WSS)
@@ -21,6 +21,7 @@ const App: React.FC = () => {
     calledNumbers: [],
     currentNumber: null,
     winner: null,
+    winningNumbers: [],
     mcCommentary: '',
   });
 
@@ -173,6 +174,7 @@ const App: React.FC = () => {
             markedNumbers: new Set(),
             isReady: true, // Host automatically ready
             color: TICKET_COLORS[0],
+            isWaiting: false,
         };
 
         const initialState: RoomState = {
@@ -182,6 +184,7 @@ const App: React.FC = () => {
             calledNumbers: [],
             currentNumber: null,
             winner: null,
+            winningNumbers: [],
             mcCommentary: 'Chào mừng! Mọi người hãy chọn vé và bấm Sẵn Sàng nhé.',
         };
 
@@ -229,6 +232,7 @@ const App: React.FC = () => {
                          markedNumbers: [],
                          isReady: false,
                          color: TICKET_COLORS[Math.floor(Math.random() * TICKET_COLORS.length)],
+                         isWaiting: false,
                      }
                  };
                  client.publish(getClientTopic(roomCode), JSON.stringify(joinPayload));
@@ -290,7 +294,7 @@ const App: React.FC = () => {
       // Update Local
       setGameState(prev => ({
           ...prev,
-          players: prev.players.map(p => p.id === playerId ? { ...p, ticket: newTicket } : p)
+          players: prev.players.map(p => p.id === playerId ? { ...p, ticket: newTicket, markedNumbers: new Set() } : p)
       }));
 
       // Broadcast
@@ -298,14 +302,14 @@ const App: React.FC = () => {
           const currentState = gameStateRef.current;
           const newState = {
               ...currentState,
-              players: currentState.players.map(p => p.id === playerId ? { ...p, ticket: newTicket } : p)
+              players: currentState.players.map(p => p.id === playerId ? { ...p, ticket: newTicket, markedNumbers: new Set() } : p)
           };
           publishState(clientRef.current, currentState.code, newState);
       } else if (clientRef.current) {
           clientRef.current.publish(getClientTopic(gameState.code), JSON.stringify({
               type: 'PLAYER_UPDATE',
               playerId: playerId,
-              changes: { ticket: newTicket }
+              changes: { ticket: newTicket, markedNumbers: [] }
           }));
       }
   };
@@ -372,7 +376,11 @@ const App: React.FC = () => {
           else if (data.type === 'MARK_UPDATE') {
               newState.players = currentState.players.map(p => {
                   if (p.id === data.playerId) {
-                      return { ...p, markedNumbers: new Set<number>(data.markedNumbers) };
+                      return { 
+                          ...p, 
+                          markedNumbers: new Set<number>(data.markedNumbers),
+                          isWaiting: data.isWaiting // Receive waiting status from guest
+                      };
                   }
                   return p;
               });
@@ -392,9 +400,12 @@ const App: React.FC = () => {
               const player = currentState.players.find(p => p.id === data.playerId);
               if (player) {
                   const claimedMarked = new Set<number>(data.markedNumbers);
-                  if (checkWin(player.ticket, claimedMarked)) {
+                  // Verify win
+                  const winningRow = checkWin(player.ticket, claimedMarked);
+                  if (winningRow) {
                       newState.status = 'ended';
                       newState.winner = player;
+                      newState.winningNumbers = winningRow;
                       newState.mcCommentary = `CHÚC MỪNG! ${player.name} ĐÃ KINH RỒI!`;
                       if (callIntervalRef.current) clearInterval(callIntervalRef.current);
                       shouldUpdate = true;
@@ -417,9 +428,9 @@ const App: React.FC = () => {
   const handleGuestMessage = (topic: string, message: any) => {
       try {
           const remoteState = JSON.parse(message.toString());
-          const hydratedPlayers = remoteState.players.map((p: any) => ({
+          const hydratedPlayers: Player[] = remoteState.players.map((p: any) => ({
               ...p,
-              markedNumbers: new Set<number>(p.markedNumbers)
+              markedNumbers: new Set<number>(p.markedNumbers as number[])
           }));
 
           setGameState({
@@ -528,9 +539,12 @@ const App: React.FC = () => {
     if (newMarked.has(num)) newMarked.delete(num);
     else newMarked.add(num);
 
+    // Calculate Waiting Status
+    const isWaiting = checkWaiting(me.ticket, newMarked);
+
     setGameState(prev => {
       const updatedPlayers = prev.players.map(p => 
-        p.id === playerId ? { ...p, markedNumbers: newMarked } : p
+        p.id === playerId ? { ...p, markedNumbers: newMarked, isWaiting: isWaiting } : p
       );
       const newState = { ...prev, players: updatedPlayers };
       if (me.isHost && clientRef.current) publishState(clientRef.current, prev.code, newState);
@@ -541,7 +555,8 @@ const App: React.FC = () => {
         clientRef.current.publish(getClientTopic(gameState.code), JSON.stringify({
             type: 'MARK_UPDATE',
             playerId: playerId,
-            markedNumbers: Array.from(newMarked)
+            markedNumbers: Array.from(newMarked),
+            isWaiting: isWaiting // Send waiting status to host
         }));
     }
   };
@@ -550,13 +565,16 @@ const App: React.FC = () => {
     const me = gameState.players.find(p => p.id === playerId);
     if (!me) return;
 
-    if (checkWin(me.ticket, me.markedNumbers)) {
+    const winningRow = checkWin(me.ticket, me.markedNumbers);
+
+    if (winningRow) {
         if (me.isHost) {
              setGameState(prev => {
                     const newState = {
                         ...prev,
                         status: 'ended' as GameStatus,
                         winner: me,
+                        winningNumbers: winningRow,
                         mcCommentary: `CHÚC MỪNG! ${me.name} ĐÃ KINH RỒI!`,
                     };
                     if (clientRef.current) publishState(clientRef.current, prev.code, newState);
@@ -588,11 +606,13 @@ const App: React.FC = () => {
             calledNumbers: [],
             currentNumber: null,
             winner: null,
+            winningNumbers: [],
             mcCommentary: 'Bắt đầu ván mới nào!',
             players: prev.players.map(p => ({
                 ...p,
                 markedNumbers: new Set(),
-                isReady: p.id === playerId // Host automatically ready, others reset
+                isReady: p.id === playerId, // Host automatically ready, others reset
+                isWaiting: false,
             }))
         };
         if (clientRef.current) publishState(clientRef.current, prev.code, newState);
@@ -814,6 +834,7 @@ const App: React.FC = () => {
 
             {/* RIGHT COLUMN */}
             <div style={{display: 'flex', flexDirection: 'column', gap: '1.5rem'}}>
+                {/* 1. MC Caller Section */}
                 <div className="mc-section" style={{marginBottom: 0}}>
                     <div className="mc-title">
                         <div className="flex flex-col items-center">
@@ -866,8 +887,7 @@ const App: React.FC = () => {
                     )}
                 </div>
 
-                <NumberBoard calledNumbers={gameState.calledNumbers} currentNumber={gameState.currentNumber} />
-
+                {/* 2. Player List (Moved Up) */}
                 <div className="card" style={{padding: '1rem'}}>
                     <h3 className="font-bold" style={{marginBottom: '0.75rem', display: 'flex', alignItems: 'center'}}>
                         <Users size={20} style={{marginRight: '0.5rem', color: '#3b82f6'}} />
@@ -889,14 +909,27 @@ const App: React.FC = () => {
                                             {p.isHost && <span style={{fontSize: '0.75rem', color: '#ca8a04'}}>Chủ phòng</span>}
                                         </div>
                                     </div>
-                                    <div style={{fontSize: '0.75rem', padding: '2px 6px', background: 'white', border: '1px solid #e5e7eb', borderRadius: '4px'}}>
-                                        {markedCount} số
+                                    
+                                    <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
+                                        {/* Waiting Indicator */}
+                                        {p.isWaiting && (
+                                            <div className="badge-waiting">
+                                                <Flame size={12} fill="#d97706" /> CHỜ
+                                            </div>
+                                        )}
+                                        <div style={{fontSize: '0.75rem', padding: '2px 6px', background: 'white', border: '1px solid #e5e7eb', borderRadius: '4px'}}>
+                                            {markedCount} số
+                                        </div>
                                     </div>
                                 </div>
                                 )
                         })}
                     </div>
                 </div>
+
+                {/* 3. Number Board (Moved Down) */}
+                <NumberBoard calledNumbers={gameState.calledNumbers} currentNumber={gameState.currentNumber} />
+
             </div>
             
             {gameState.status === 'ended' && gameState.winner && (
@@ -906,9 +939,21 @@ const App: React.FC = () => {
                     <Trophy size={48} style={{color: '#ca8a04'}} />
                   </div>
                   <h2 style={{fontSize: '2.25rem', fontWeight: '800', color: '#dc2626', marginBottom: '0.5rem', textTransform: 'uppercase'}}>Chiến Thắng!</h2>
-                  <p style={{color: '#4b5563', fontSize: '1.125rem', marginBottom: '2rem'}}>
+                  <p style={{color: '#4b5563', fontSize: '1.125rem', marginBottom: '1.5rem'}}>
                     Chúc mừng <span style={{fontWeight: 'bold', color: 'black'}}>{gameState.winner.name}</span> đã Kinh!
                   </p>
+                  
+                  {/* Winning Numbers Display */}
+                  <div style={{marginBottom: '2rem'}}>
+                      <p style={{fontSize: '0.875rem', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em'}}>Hàng Số Chiến Thắng</p>
+                      <div className="win-numbers-grid">
+                          {gameState.winningNumbers.sort((a,b) => a-b).map(num => (
+                              <div key={num} className="win-number-ball">
+                                  {num}
+                              </div>
+                          ))}
+                      </div>
+                  </div>
                   
                   {isHost ? (
                       <button 

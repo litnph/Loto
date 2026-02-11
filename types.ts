@@ -14,8 +14,9 @@ export interface Player {
   isBot: boolean;
   ticket: TicketData;
   markedNumbers: Set<number>;
-  isReady: boolean; // New: Ready status
-  color: string;    // New: Ticket color theme (hex)
+  isReady: boolean; // Ready status
+  color: string;    // Ticket color theme (hex)
+  isWaiting: boolean; // New: Waiting status (4/5 numbers in a row)
 }
 
 export type GameStatus = 'lobby' | 'waiting' | 'playing' | 'ended';
@@ -27,6 +28,7 @@ export interface RoomState {
   calledNumbers: number[];
   currentNumber: number | null;
   winner: Player | null;
+  winningNumbers: number[]; // New: The specific numbers that won the game
   mcCommentary: string;
 }
 

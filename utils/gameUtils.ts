@@ -104,13 +104,27 @@ export const generateTicket = (): TicketData => {
   };
 };
 
-export const checkWin = (ticket: TicketData, markedNumbers: Set<number>): boolean => {
+// Returns the array of winning numbers if won, otherwise null
+export const checkWin = (ticket: TicketData, markedNumbers: Set<number>): number[] | null => {
   // Win condition: Any row is fully marked
   for (const row of ticket.rows) {
     const numbersInRow = row.filter((n): n is number => n !== null);
     if (numbersInRow.length > 0 && numbersInRow.every(n => markedNumbers.has(n))) {
-      return true;
+      return numbersInRow;
     }
   }
-  return false;
+  return null;
+};
+
+// Check if player is "waiting" (needs 1 more number in a row to win)
+// Assumes 5 numbers per row. Returns true if any row has exactly 4 marked numbers.
+export const checkWaiting = (ticket: TicketData, markedNumbers: Set<number>): boolean => {
+    for (const row of ticket.rows) {
+        const numbersInRow = row.filter((n): n is number => n !== null);
+        const markedCount = numbersInRow.filter(n => markedNumbers.has(n)).length;
+        if (numbersInRow.length === 5 && markedCount === 4) {
+            return true;
+        }
+    }
+    return false;
 };
