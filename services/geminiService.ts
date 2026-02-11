@@ -1,6 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 
 let genAI: GoogleGenAI | null = null;
+let isQuotaExceeded = false;
 
 try {
   // Safe check for process to prevent Vercel/browser runtime errors if process is not polyfilled
@@ -12,7 +13,7 @@ try {
 }
 
 export const generateMCCommentary = async (number: number): Promise<string> => {
-  if (!genAI) {
+  if (!genAI || isQuotaExceeded) {
     return `Số ${number}!`;
   }
 
@@ -30,8 +31,14 @@ export const generateMCCommentary = async (number: number): Promise<string> => {
     });
 
     return response.text?.trim() || `Số ${number}!`;
-  } catch (error) {
-    console.error("Gemini API Error:", error);
+  } catch (error: any) {
+    // Handle Quota Exceeded gracefully
+    if (error?.status === 429 || error?.code === 429 || error?.toString().includes('429') || error?.toString().includes('quota')) {
+        console.warn("Gemini API Quota Exceeded. Disabling AI commentary for this session.");
+        isQuotaExceeded = true;
+    } else {
+        console.error("Gemini API Error:", error);
+    }
     return `Con số... ${number}!`;
   }
 };
