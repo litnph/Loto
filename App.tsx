@@ -5,7 +5,7 @@ import Lobby from './components/Lobby';
 import Ticket from './components/Ticket';
 import NumberBoard from './components/NumberBoard';
 import { generateMCCommentary } from './services/geminiService';
-import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, XCircle, Palette, Shuffle } from 'lucide-react';
+import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, XCircle, Palette, Shuffle, X } from 'lucide-react';
 import mqtt from 'mqtt';
 
 // Sử dụng Public Broker có hỗ trợ WebSockets Secure (WSS)
@@ -30,6 +30,12 @@ const App: React.FC = () => {
   const [connectionError, setConnectionError] = useState('');
   const [isMuted, setIsMuted] = useState(false);
   
+  // UI States
+  const [showColorPicker, setShowColorPicker] = useState(false);
+
+  // Audio state
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  
   const clientRef = useRef<mqtt.MqttClient | null>(null);
   const callIntervalRef = useRef<any>(null);
   const gameStateRef = useRef(gameState);
@@ -37,6 +43,7 @@ const App: React.FC = () => {
   // Sync state ref for event handlers
   useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
 
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (clientRef.current) {
@@ -47,19 +54,49 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // --- Audio / TTS Helper ---
+  // --- Audio / TTS Setup ---
+  useEffect(() => {
+    const loadVoices = () => {
+      const vs = window.speechSynthesis.getVoices();
+      setVoices(vs);
+    };
+
+    // Chrome loads voices asynchronously
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+    loadVoices();
+
+    return () => {
+      window.speechSynthesis.onvoiceschanged = null;
+    };
+  }, []);
+
   const speakText = useCallback((text: string) => {
     if (isMuted || !window.speechSynthesis) return;
+    
+    // Cancel any ongoing speech
     window.speechSynthesis.cancel();
+
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'vi-VN';
-    utterance.rate = 1.0; 
-    utterance.pitch = 1.1;
-    const voices = window.speechSynthesis.getVoices();
-    const viVoice = voices.find(v => v.lang.includes('vi'));
-    if (viVoice) utterance.voice = viVoice;
+    utterance.lang = 'vi-VN'; // Hint for Vietnamese
+    
+    // Search for a specific Vietnamese voice
+    // Prioritize Google's Vietnamese voice or similar if available
+    const viVoice = voices.find(v => 
+        v.lang.toLowerCase().includes('vi') || 
+        v.name.toLowerCase().includes('vietnam') || 
+        v.name.toLowerCase().includes('tiếng việt')
+    );
+
+    if (viVoice) {
+        utterance.voice = viVoice;
+    }
+    
+    // Adjust rate for "Loto" style (slightly slower, clearer)
+    utterance.rate = 0.9; 
+    utterance.pitch = 1.0;
+
     window.speechSynthesis.speak(utterance);
-  }, [isMuted]);
+  }, [isMuted, voices]);
 
   // --- MQTT Helpers ---
   const getHostTopic = (code: string) => `${TOPIC_PREFIX}/${code}/host`;
@@ -115,7 +152,7 @@ const App: React.FC = () => {
             isBot: false,
             ticket: myTicket,
             markedNumbers: new Set(),
-            isReady: true, // Host always ready? Or let them toggle too. Let's make host ready by default to start.
+            isReady: true, // Host automatically ready
             color: TICKET_COLORS[0],
         };
 
@@ -254,32 +291,31 @@ const App: React.FC = () => {
       }
   };
 
-  const handleChangeColor = () => {
+  const handleSelectColor = (selectedColor: string) => {
       const me = gameState.players.find(p => p.id === playerId);
       if (!me) return;
-
-      const currentColorIndex = TICKET_COLORS.indexOf(me.color);
-      const nextColor = TICKET_COLORS[(currentColorIndex + 1) % TICKET_COLORS.length];
 
       // Update Local
       setGameState(prev => ({
           ...prev,
-          players: prev.players.map(p => p.id === playerId ? { ...p, color: nextColor } : p)
+          players: prev.players.map(p => p.id === playerId ? { ...p, color: selectedColor } : p)
       }));
+      
+      setShowColorPicker(false);
 
       // Broadcast
       if (me.isHost && clientRef.current) {
           const currentState = gameStateRef.current;
           const newState = {
               ...currentState,
-              players: currentState.players.map(p => p.id === playerId ? { ...p, color: nextColor } : p)
+              players: currentState.players.map(p => p.id === playerId ? { ...p, color: selectedColor } : p)
           };
           publishState(clientRef.current, currentState.code, newState);
       } else if (clientRef.current) {
           clientRef.current.publish(getClientTopic(gameState.code), JSON.stringify({
               type: 'PLAYER_UPDATE',
               playerId: playerId,
-              changes: { color: nextColor }
+              changes: { color: selectedColor }
           }));
       }
   };
@@ -624,7 +660,7 @@ const App: React.FC = () => {
                                     <Shuffle size={18} /> Đổi Số
                                 </button>
                                 <button 
-                                    onClick={handleChangeColor}
+                                    onClick={() => setShowColorPicker(true)}
                                     className="btn"
                                     style={{background: me.color, color: 'white'}}
                                 >
@@ -692,6 +728,35 @@ const App: React.FC = () => {
                      )}
                 </div>
             </div>
+            
+            {/* Color Picker Modal */}
+            {showColorPicker && (
+                <div className="overlay">
+                    <div className="modal" style={{maxWidth: '20rem'}}>
+                        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                            <h3 className="font-bold" style={{margin: 0, fontSize: '1.25rem'}}>Chọn Màu Vé</h3>
+                            <button className="btn-close" onClick={() => setShowColorPicker(false)}>
+                                <X size={20} />
+                            </button>
+                        </div>
+                        
+                        <div className="color-grid">
+                            {TICKET_COLORS.map(color => (
+                                <div
+                                    key={color}
+                                    className={`color-swatch ${me?.color === color ? 'active' : ''}`}
+                                    style={{backgroundColor: color}}
+                                    onClick={() => handleSelectColor(color)}
+                                />
+                            ))}
+                        </div>
+                        
+                        <p className="text-center text-muted" style={{fontSize: '0.875rem'}}>
+                            Chọn màu để dễ nhận biết vé của bạn.
+                        </p>
+                    </div>
+                </div>
+            )}
           </div>
         )}
 

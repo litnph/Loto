@@ -18,7 +18,8 @@ export const generateMCCommentary = async (number: number): Promise<string> => {
 
   try {
     const model = 'gemini-3-flash-preview';
-    const prompt = `Viết một câu rao lô tô ngắn, vui nhộn, vần điệu bằng tiếng Việt cho con số ${number}. Chỉ trả về câu rao, không có giải thích. Ví dụ với số 1: "Gì đây gì đây, cây cột đèn là số 1".`;
+    // Updated prompt to enforce the number is mentioned clearly at the end
+    const prompt = `Viết một câu rao lô tô ngắn (lục bát hoặc vè), vui nhộn, vần điệu bằng tiếng Việt cho con số ${number}. Bắt buộc kết thúc câu bằng cụm từ "là số ${number}" hoặc "con số ${number}". Không thêm giải thích hay lời dẫn.`;
     
     const response = await genAI.models.generateContent({
       model,
