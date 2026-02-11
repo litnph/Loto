@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { MessageCircle, Send, X, Minus, Phone, Video, Image, Smile, Mic, PlusCircle, ThumbsUp } from 'lucide-react';
+import { MessageCircle, Send, X, Minus, ThumbsUp } from 'lucide-react';
 import { ChatMessage } from '../types';
 
 interface ChatBoxProps {
@@ -116,8 +116,6 @@ const ChatBox: React.FC<ChatBoxProps> = ({ messages, currentPlayerId, onSendMess
           </div>
         </div>
         <div className="chat-header-actions">
-          <Phone size={20} className="header-icon" />
-          <Video size={20} className="header-icon" />
           <Minus size={20} className="header-icon" onClick={(e) => { e.stopPropagation(); setIsOpen(false); }} />
           <X size={20} className="header-icon" onClick={(e) => { e.stopPropagation(); setIsOpen(false); }} />
         </div>
@@ -171,15 +169,6 @@ const ChatBox: React.FC<ChatBoxProps> = ({ messages, currentPlayerId, onSendMess
 
       {/* 3. Footer (Input) */}
       <div className="chat-footer">
-        <div className="footer-actions">
-           <PlusCircle size={20} className="footer-icon" />
-           <Image size={20} className="footer-icon" />
-           <div className="footer-icon-group">
-             <Smile size={20} className="footer-icon" />
-             <div className="gif-badge">GIF</div>
-           </div>
-        </div>
-        
         <form onSubmit={handleSubmit} className="input-container">
            <input 
              ref={inputRef}
@@ -188,9 +177,6 @@ const ChatBox: React.FC<ChatBoxProps> = ({ messages, currentPlayerId, onSendMess
              value={inputText}
              onChange={(e) => setInputText(e.target.value)}
            />
-           <div className="input-smiley">
-              <Smile size={20} color="#65676b" />
-           </div>
         </form>
 
         <div className="send-action" onClick={handleSubmit}>
@@ -206,7 +192,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ messages, currentPlayerId, onSendMess
         .chat-window {
           position: fixed;
           bottom: 0;
-          right: 80px; /* Shifted left of the FAB area usually, but here replacing it mostly */
+          right: 80px;
           width: 338px;
           height: 455px;
           background: white;
@@ -390,31 +376,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ messages, currentPlayerId, onSendMess
           padding: 8px;
           display: flex;
           align-items: center;
-          border-top: 1px solid transparent; /* Cleaner look */
-        }
-        .footer-actions {
-          display: flex;
-          gap: 12px;
-          margin-right: 8px;
-          align-items: center;
-        }
-        .footer-icon {
-          color: #0084ff;
-          cursor: pointer;
-        }
-        .footer-icon-group {
-           display: flex; 
-           align-items: center;
-           gap: 8px;
-        }
-        .gif-badge {
-           font-size: 10px;
-           font-weight: 900;
-           color: white;
-           background: #0084ff;
-           padding: 2px 4px;
-           border-radius: 4px;
-           cursor: pointer;
+          border-top: 1px solid transparent;
         }
 
         .input-container {
@@ -429,17 +391,10 @@ const ChatBox: React.FC<ChatBoxProps> = ({ messages, currentPlayerId, onSendMess
           width: 100%;
           border: none;
           background: transparent;
-          padding: 8px 30px 8px 12px;
+          padding: 8px 12px;
           font-size: 14px;
           outline: none;
           color: #050505;
-        }
-        .input-smiley {
-          position: absolute;
-          right: 8px;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
         }
 
         /* Scrollbar */
