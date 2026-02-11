@@ -5,7 +5,7 @@ import Lobby from './components/Lobby';
 import Ticket from './components/Ticket';
 import NumberBoard from './components/NumberBoard';
 import { generateMCCommentary } from './services/geminiService';
-import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, XCircle, Palette, Shuffle, X } from 'lucide-react';
+import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, XCircle, Palette, Shuffle, X, Settings2 } from 'lucide-react';
 import mqtt from 'mqtt';
 
 // Sử dụng Public Broker có hỗ trợ WebSockets Secure (WSS)
@@ -35,6 +35,7 @@ const App: React.FC = () => {
 
   // Audio state
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [selectedVoiceURI, setSelectedVoiceURI] = useState<string>('');
   
   const clientRef = useRef<mqtt.MqttClient | null>(null);
   const callIntervalRef = useRef<any>(null);
@@ -60,6 +61,19 @@ const App: React.FC = () => {
       const vs = window.speechSynthesis.getVoices();
       if (vs.length > 0) {
         setVoices(vs);
+        
+        // Auto-select best Vietnamese voice if not yet selected
+        if (!selectedVoiceURI) {
+            const viVoice = vs.find(v => v.name === 'Google Tiếng Việt') || 
+                            vs.find(v => v.name.includes('Vietnamese') || v.name.includes('Tiếng Việt')) ||
+                            vs.find(v => v.lang.includes('vi'));
+            if (viVoice) {
+                setSelectedVoiceURI(viVoice.voiceURI);
+            } else if (vs.length > 0) {
+                // Fallback to first voice if no Vietnamese found (user can change later)
+                setSelectedVoiceURI(vs[0].voiceURI);
+            }
+        }
       }
     };
 
@@ -71,7 +85,7 @@ const App: React.FC = () => {
     return () => {
       window.speechSynthesis.onvoiceschanged = null;
     };
-  }, []);
+  }, [selectedVoiceURI]); // Depend on selectedVoiceURI to avoid overwriting user choice
 
   const speakText = useCallback((text: string) => {
     if (isMuted || !window.speechSynthesis) return;
@@ -81,25 +95,19 @@ const App: React.FC = () => {
 
     const utterance = new SpeechSynthesisUtterance(text);
     
-    // FORCE LANG CODE: This is crucial for iOS/Safari even if no voice object is set
+    // Force Lang Code
     utterance.lang = 'vi-VN'; 
     
-    // Get voices dynamically if state is empty (handling race conditions)
-    let availableVoices = voices;
-    if (availableVoices.length === 0) {
-        availableVoices = window.speechSynthesis.getVoices();
-    }
+    // Find the selected voice object
+    const activeVoice = voices.find(v => v.voiceURI === selectedVoiceURI);
 
-    // Strict search for Vietnamese
-    // 1. Priority: Google's Online Voice (Chrome)
-    // 2. Priority: Microsoft's Online Voice (Edge)
-    // 3. Fallback: Any voice with 'vi' or 'vietnam' in ID/Name/Lang
-    const viVoice = availableVoices.find(v => v.name === 'Google Tiếng Việt') || 
-                    availableVoices.find(v => v.name.includes('Vietnamese') || v.name.includes('Tiếng Việt')) ||
-                    availableVoices.find(v => v.lang.includes('vi'));
-
-    if (viVoice) {
-        utterance.voice = viVoice;
+    if (activeVoice) {
+        utterance.voice = activeVoice;
+        console.log("Speaking with:", activeVoice.name);
+    } else {
+        // Fallback logic if selection is invalid for some reason
+        const viVoice = voices.find(v => v.lang.includes('vi'));
+        if (viVoice) utterance.voice = viVoice;
     }
     
     // Adjust rate: slightly slower for Bingo to be clear
@@ -107,7 +115,7 @@ const App: React.FC = () => {
     utterance.pitch = 1.0;
 
     window.speechSynthesis.speak(utterance);
-  }, [isMuted, voices]);
+  }, [isMuted, voices, selectedVoiceURI]);
 
   // --- MQTT Helpers ---
   const getHostTopic = (code: string) => `${TOPIC_PREFIX}/${code}/host`;
@@ -808,8 +816,37 @@ const App: React.FC = () => {
             <div style={{display: 'flex', flexDirection: 'column', gap: '1.5rem'}}>
                 <div className="mc-section" style={{marginBottom: 0}}>
                     <div className="mc-title">
-                        <Volume2 size={20} />
-                        <span>MC Gemini</span>
+                        <div className="flex flex-col items-center">
+                            <div className="flex items-center gap-2">
+                                <Volume2 size={20} />
+                                <span>MC Gemini</span>
+                            </div>
+                            
+                            {/* Voice Selector Dropdown */}
+                            <div className="flex items-center gap-1 mt-1" style={{fontSize: '0.75rem'}}>
+                                <Settings2 size={12} className="text-muted" />
+                                <select 
+                                    value={selectedVoiceURI} 
+                                    onChange={(e) => setSelectedVoiceURI(e.target.value)}
+                                    style={{
+                                        border: 'none', 
+                                        background: 'transparent', 
+                                        color: '#6b7280', 
+                                        maxWidth: '150px',
+                                        fontSize: '0.75rem',
+                                        cursor: 'pointer',
+                                        outline: 'none'
+                                    }}
+                                >
+                                    {voices.length === 0 && <option value="">Đang tải giọng...</option>}
+                                    {voices.map(v => (
+                                        <option key={v.voiceURI} value={v.voiceURI}>
+                                            {v.name}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        </div>
                     </div>
                     
                     <div style={{minHeight: '60px', display: 'flex', alignItems: 'center', justifyContent: 'center'}}>
