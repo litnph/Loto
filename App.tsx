@@ -5,7 +5,7 @@ import Lobby from './components/Lobby';
 import Ticket from './components/Ticket';
 import NumberBoard from './components/NumberBoard';
 import { generateMCCommentary } from './services/geminiService';
-import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, XCircle, Palette, Shuffle, X, Settings2, Flame, Coins, Plus, Minus, Eye } from 'lucide-react';
+import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, Palette, Shuffle, X, Settings2, Flame, Coins, Plus, Eye, Trash2 } from 'lucide-react';
 import mqtt from 'mqtt';
 
 const BROKER_URL = 'wss://broker.emqx.io:8084/mqtt'; 
@@ -32,7 +32,7 @@ const App: React.FC = () => {
   const [isMuted, setIsMuted] = useState(false);
   
   // UI States
-  const [showColorPicker, setShowColorPicker] = useState(false);
+  const [activeSheetIndexForColor, setActiveSheetIndexForColor] = useState<number | null>(null);
 
   // Audio state
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
@@ -133,7 +133,7 @@ const App: React.FC = () => {
     setPlayerId(myId);
 
     const client = setupMqttClient(myId, () => {
-        const mySheet = generateTicket();
+        const mySheet = generateTicket(TICKET_COLORS[0]);
         const hostPlayer: Player = {
             id: myId,
             name: playerName,
@@ -193,7 +193,8 @@ const App: React.FC = () => {
     const client = setupMqttClient(myId, () => {
         client.subscribe(getHostTopic(roomCode), (err) => {
             if (!err) {
-                 const mySheet = generateTicket();
+                 const randomColor = TICKET_COLORS[Math.floor(Math.random() * TICKET_COLORS.length)];
+                 const mySheet = generateTicket(randomColor);
                  const joinPayload = {
                      type: 'JOIN_REQUEST',
                      player: {
@@ -204,7 +205,7 @@ const App: React.FC = () => {
                          sheets: [mySheet],
                          markedNumbers: [],
                          isReady: false,
-                         color: TICKET_COLORS[Math.floor(Math.random() * TICKET_COLORS.length)],
+                         color: randomColor,
                          isWaiting: false,
                          balance: 0,
                          sheetCount: 1,
@@ -258,38 +259,61 @@ const App: React.FC = () => {
       }
   };
 
-  const handleChangeTicket = () => {
+  const handleShuffleSheet = (index: number) => {
       const me = gameState.players.find(p => p.id === playerId);
       if (!me || me.isReady) return;
-      
-      // Regenerate based on sheetCount
-      const newSheets: TicketData[] = [];
-      for(let i=0; i<me.sheetCount; i++) {
-          newSheets.push(generateTicket());
-      }
+
+      const newSheets = [...me.sheets];
+      // Generate new ticket but keep the same color
+      newSheets[index] = generateTicket(newSheets[index].color);
       
       updatePlayerLocallyAndBroadcast(playerId, { sheets: newSheets, markedNumbers: new Set() });
   };
 
-  const handleUpdateSheetCount = (delta: number) => {
+  const handleSheetColorChange = (index: number, color: string) => {
       const me = gameState.players.find(p => p.id === playerId);
       if (!me || me.isReady) return;
 
-      const newCount = Math.max(1, Math.min(5, me.sheetCount + delta)); // Limit 1 to 5 sheets
-      if (newCount === me.sheetCount) return;
-
-      // Regenerate tickets
-      const newSheets: TicketData[] = [];
-      for(let i=0; i<newCount; i++) {
-          newSheets.push(generateTicket());
+      const newSheets = [...me.sheets];
+      newSheets[index] = { ...newSheets[index], color: color };
+      
+      // Also update player main color if it's the first sheet
+      const extraChanges: Partial<Player> = { sheets: newSheets };
+      if (index === 0) {
+          extraChanges.color = color;
       }
 
-      updatePlayerLocallyAndBroadcast(playerId, { sheetCount: newCount, sheets: newSheets, markedNumbers: new Set() });
+      updatePlayerLocallyAndBroadcast(playerId, extraChanges);
+      setActiveSheetIndexForColor(null);
   };
 
-  const handleSelectColor = (selectedColor: string) => {
-      updatePlayerLocallyAndBroadcast(playerId, { color: selectedColor });
-      setShowColorPicker(false);
+  const handleAddSheet = () => {
+      const me = gameState.players.find(p => p.id === playerId);
+      if (!me || me.isReady || me.sheets.length >= 6) return; // Limit 6
+
+      // Inherit color from the last sheet or random
+      const lastColor = me.sheets.length > 0 ? me.sheets[me.sheets.length - 1].color : TICKET_COLORS[0];
+      const newSheet = generateTicket(lastColor);
+      const newSheets = [...me.sheets, newSheet];
+      
+      updatePlayerLocallyAndBroadcast(playerId, { 
+          sheets: newSheets, 
+          sheetCount: newSheets.length,
+          markedNumbers: new Set()
+      });
+  };
+
+  const handleRemoveSheet = (index: number) => {
+      const me = gameState.players.find(p => p.id === playerId);
+      if (!me || me.isReady || me.sheets.length <= 1) return;
+
+      const newSheets = me.sheets.filter((_, i) => i !== index);
+      
+      updatePlayerLocallyAndBroadcast(playerId, { 
+          sheets: newSheets, 
+          sheetCount: newSheets.length,
+          markedNumbers: new Set()
+      });
   };
 
   const handleUpdateBetPrice = (newPrice: number) => {
@@ -698,39 +722,61 @@ const App: React.FC = () => {
                         <>
                         <div className="card" style={{padding: '1rem', borderTop: `4px solid ${me.color}`}}>
                             <div className="flex justify-between items-center mb-2">
-                                <h3 className="font-bold">Vé Của Bạn</h3>
-                                <div className="flex items-center gap-2 text-sm bg-gray-100 px-2 py-1 rounded">
-                                    <span>Số lá: <b>{me.sheetCount}</b></span>
-                                    {!me.isReady && (
-                                        <div className="flex gap-1">
-                                            <button onClick={() => handleUpdateSheetCount(-1)} className="p-1 hover:bg-gray-200 rounded"><Minus size={14}/></button>
-                                            <button onClick={() => handleUpdateSheetCount(1)} className="p-1 hover:bg-gray-200 rounded"><Plus size={14}/></button>
-                                        </div>
-                                    )}
-                                </div>
+                                <h3 className="font-bold">Bộ Vé Của Bạn ({me.sheets.length} Lá)</h3>
                             </div>
                             
-                            {/* Preview first sheet only to save space */}
-                            <div style={{opacity: 0.8, transform: 'scale(0.9)', transformOrigin: 'top left'}}>
-                                <Ticket ticket={me.sheets[0]} markedNumbers={me.markedNumbers} disabled={true} color={me.color} />
+                            <div className="ticket-grid">
+                                {me.sheets.map((sheet, idx) => (
+                                    <div key={sheet.id} style={{position: 'relative'}}>
+                                         <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem'}}>
+                                            <span className="text-xs font-bold text-muted">Lá {idx + 1}</span>
+                                            {!me.isReady && (
+                                                <div className="flex gap-1">
+                                                    <button onClick={() => handleShuffleSheet(idx)} className="btn-icon" title="Đổi số">
+                                                        <Shuffle size={14} />
+                                                    </button>
+                                                    <button onClick={() => setActiveSheetIndexForColor(idx)} className="btn-icon" title="Đổi màu" style={{color: sheet.color}}>
+                                                        <Palette size={14} />
+                                                    </button>
+                                                    <button onClick={() => handleRemoveSheet(idx)} className="btn-icon" title="Xóa lá" style={{color: '#ef4444'}}>
+                                                        <Trash2 size={14} />
+                                                    </button>
+                                                </div>
+                                            )}
+                                         </div>
+                                         <div style={{transform: 'scale(0.95)', transformOrigin: 'top left'}}>
+                                            <Ticket ticket={sheet} markedNumbers={me.markedNumbers} disabled={true} color={sheet.color} />
+                                         </div>
+                                    </div>
+                                ))}
                             </div>
-                            {me.sheetCount > 1 && <div className="text-center text-xs text-muted mt-1">+ {me.sheetCount - 1} lá nữa...</div>}
-                            
-                            <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginTop: '1rem'}}>
-                                <button onClick={handleChangeTicket} disabled={me.isReady} className="btn" style={{background: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db'}}>
-                                    <Shuffle size={18} /> Đổi Số
+
+                            {!me.isReady && (
+                                <button 
+                                    onClick={handleAddSheet} 
+                                    className="btn w-full mt-4" 
+                                    style={{border: '2px dashed #d1d5db', background: 'transparent', color: '#6b7280'}}
+                                >
+                                    <Plus size={20} /> Thêm Lá Mới (Max 6)
                                 </button>
-                                <button onClick={() => setShowColorPicker(true)} className="btn" style={{background: me.color, color: 'white'}}>
-                                    <Palette size={18} /> Đổi Màu
-                                </button>
-                            </div>
+                            )}
                             
                             <div className="mt-4 p-2 bg-red-50 rounded border border-red-100 text-center text-sm text-red-800">
                                 Tổng cược: <b>{formatCurrency(me.sheetCount * gameState.betPrice)}</b>
                             </div>
 
-                            <button onClick={handleToggleReady} className={`btn w-full ${me.isReady ? 'btn-primary' : ''}`} style={{marginTop: '1rem', background: me.isReady ? '#16a34a' : '#9ca3af', color: 'white'}}>
-                                {me.isReady ? <><CheckCircle2 /> ĐÃ SẴN SÀNG</> : 'BẤM ĐỂ SẴN SÀNG'}
+                            <button 
+                                onClick={handleToggleReady} 
+                                className={`btn w-full ${!me.isReady ? 'btn-pulse' : ''}`} 
+                                style={{
+                                    marginTop: '1rem', 
+                                    background: me.isReady ? '#16a34a' : '#2563eb', // Blue for Call to Action, Green for Done
+                                    color: 'white',
+                                    fontWeight: '800',
+                                    boxShadow: !me.isReady ? '0 4px 12px rgba(37, 99, 235, 0.4)' : 'none'
+                                }}
+                            >
+                                {me.isReady ? <><CheckCircle2 /> ĐÃ SẴN SÀNG</> : <><Play /> BẤM ĐỂ SẴN SÀNG</>}
                             </button>
                         </div>
                         </>
@@ -791,16 +837,16 @@ const App: React.FC = () => {
                 </div>
             </div>
             
-            {showColorPicker && (
+            {activeSheetIndexForColor !== null && (
                 <div className="overlay">
                     <div className="modal" style={{maxWidth: '20rem'}}>
                         <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-                            <h3 className="font-bold" style={{margin: 0, fontSize: '1.25rem'}}>Chọn Màu Vé</h3>
-                            <button className="btn-close" onClick={() => setShowColorPicker(false)}><X size={20} /></button>
+                            <h3 className="font-bold" style={{margin: 0, fontSize: '1.25rem'}}>Chọn Màu Cho Lá {activeSheetIndexForColor + 1}</h3>
+                            <button className="btn-close" onClick={() => setActiveSheetIndexForColor(null)}><X size={20} /></button>
                         </div>
                         <div className="color-grid">
                             {TICKET_COLORS.map(color => (
-                                <div key={color} className={`color-swatch ${me?.color === color ? 'active' : ''}`} style={{backgroundColor: color}} onClick={() => handleSelectColor(color)} />
+                                <div key={color} className={`color-swatch`} style={{backgroundColor: color}} onClick={() => handleSheetColorChange(activeSheetIndexForColor, color)} />
                             ))}
                         </div>
                     </div>
@@ -827,18 +873,20 @@ const App: React.FC = () => {
                              <p className="text-gray-500">Bạn vào sau khi ván đã bắt đầu. Vui lòng đợi ván sau nhé!</p>
                         </div>
                     ) : (
-                        me && me.sheets.map((sheet, idx) => (
-                            <div key={sheet.id} style={{marginBottom: '1rem'}}>
-                                <div className="text-xs font-bold text-muted mb-1 ml-1">Lá {idx + 1}</div>
-                                <Ticket 
-                                    ticket={sheet} 
-                                    markedNumbers={me.markedNumbers} 
-                                    onNumberClick={handleMarkNumber}
-                                    disabled={gameState.status === 'ended' || isSpectator}
-                                    color={me.color}
-                                />
-                            </div>
-                        ))
+                        <div className="ticket-grid">
+                            {me && me.sheets.map((sheet, idx) => (
+                                <div key={sheet.id} style={{marginBottom: '1rem'}}>
+                                    <div className="text-xs font-bold text-muted mb-1 ml-1">Lá {idx + 1}</div>
+                                    <Ticket 
+                                        ticket={sheet} 
+                                        markedNumbers={me.markedNumbers} 
+                                        onNumberClick={handleMarkNumber}
+                                        disabled={gameState.status === 'ended' || isSpectator}
+                                        color={sheet.color}
+                                    />
+                                </div>
+                            ))}
+                        </div>
                     )}
                     
                     {gameState.status === 'playing' && !isSpectator && (
@@ -917,9 +965,7 @@ const App: React.FC = () => {
                                 return (
                                 <div key={p.id} className={`player-item ${p.id === playerId ? 'is-me' : ''}`} style={{opacity: p.status === 'spectating' ? 0.6 : 1}}>
                                     <div style={{display: 'flex', alignItems: 'center', gap: '0.75rem'}}>
-                                        <div className="avatar" style={{background: p.color}}>
-                                            {p.name.charAt(0).toUpperCase()}
-                                        </div>
+                                        <div className="avatar" style={{background: p.color}}>{p.name.charAt(0).toUpperCase()}</div>
                                         <div style={{display: 'flex', flexDirection: 'column'}}>
                                             <span style={{fontWeight: 'bold', color: p.id === playerId ? 'black' : '#4b5563'}}>
                                                 {p.name}
@@ -973,6 +1019,13 @@ const App: React.FC = () => {
                               <div key={num} className="win-number-ball">{num}</div>
                           ))}
                       </div>
+                  </div>
+
+                  <div style={{marginBottom: '1.5rem', borderTop: '2px dashed #e5e7eb', paddingTop: '1.5rem'}}>
+                       <p style={{fontSize: '0.875rem', color: '#6b7280', marginBottom: '0.5rem'}}>Bảng Số Đã Gọi</p>
+                       <div style={{transform: 'scale(0.9)', transformOrigin: 'top center'}}>
+                         <NumberBoard calledNumbers={gameState.calledNumbers} currentNumber={null} />
+                       </div>
                   </div>
                   
                   {isHost ? (

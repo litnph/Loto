@@ -1,7 +1,7 @@
-import { TicketData, CellValue } from '../types';
+import { TicketData, CellValue, TICKET_COLORS } from '../types';
 
 // Generate a valid Vietnamese Loto ticket (1 Lá = 9 rows)
-export const generateTicket = (): TicketData => {
+export const generateTicket = (color?: string): TicketData => {
   const rowsCount = 9;
   const numbersPerRow = 5;
   const ticket: CellValue[][] = Array(rowsCount).fill(null).map(() => Array(9).fill(null));
@@ -77,6 +77,7 @@ export const generateTicket = (): TicketData => {
   return {
     rows: ticket,
     id: Math.random().toString(36).substr(2, 9),
+    color: color || TICKET_COLORS[Math.floor(Math.random() * TICKET_COLORS.length)]
   };
 };
 

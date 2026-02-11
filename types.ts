@@ -6,6 +6,7 @@ export type CellValue = number | null;
 export interface TicketData {
   rows: CellValue[][]; // 9 rows per sheet
   id: string;
+  color: string; // Specific color for this sheet
 }
 
 export type PlayerStatus = 'playing' | 'spectating';
@@ -18,7 +19,7 @@ export interface Player {
   sheets: TicketData[]; // A player can buy multiple sheets (Lá)
   markedNumbers: Set<number>;
   isReady: boolean;
-  color: string;
+  color: string; // Avatar color
   isWaiting: boolean;
   
   // Economy
@@ -55,4 +56,7 @@ export const TICKET_COLORS = [
   '#ea580c', // Orange
   '#db2777', // Pink
   '#0891b2', // Cyan
+  '#4b5563', // Gray
+  '#059669', // Emerald
+  '#d97706', // Amber
 ];
