@@ -1,22 +1,30 @@
 export type CellValue = number | null;
 
-// Standard Vietnamese Loto Ticket: 9 columns x 3 rows
-// Each row has exactly 5 numbers.
+// Standard Vietnamese Loto Sheet (Lá): 9 columns x 9 rows
+// User definition: "3 vé = 1 lá". Usually 1 small ticket is 3 rows.
+// So 1 Sheet (Lá) = 3 Tickets = 9 rows.
 export interface TicketData {
-  rows: CellValue[][]; // 3 rows, each length 9
+  rows: CellValue[][]; // 9 rows per sheet
   id: string;
 }
+
+export type PlayerStatus = 'playing' | 'spectating';
 
 export interface Player {
   id: string;
   name: string;
   isHost: boolean;
   isBot: boolean;
-  ticket: TicketData;
+  sheets: TicketData[]; // A player can buy multiple sheets (Lá)
   markedNumbers: Set<number>;
-  isReady: boolean; // Ready status
-  color: string;    // Ticket color theme (hex)
-  isWaiting: boolean; // New: Waiting status (4/5 numbers in a row)
+  isReady: boolean;
+  color: string;
+  isWaiting: boolean;
+  
+  // Economy
+  balance: number;      // Current money (starts at 0)
+  sheetCount: number;   // How many sheets they want to buy
+  status: PlayerStatus; // Playing or just watching (late joiners)
 }
 
 export type GameStatus = 'lobby' | 'waiting' | 'playing' | 'ended';
@@ -28,15 +36,19 @@ export interface RoomState {
   calledNumbers: number[];
   currentNumber: number | null;
   winner: Player | null;
-  winningNumbers: number[]; // New: The specific numbers that won the game
+  winningNumbers: number[];
   mcCommentary: string;
+
+  // Economy
+  betPrice: number;     // Price per sheet (set by host)
+  pot: number;          // Total prize money for the current round
 }
 
 export const TOTAL_NUMBERS = 90;
-export const CALL_INTERVAL_MS = 4500; // Time between calls
+export const CALL_INTERVAL_MS = 4500;
 
 export const TICKET_COLORS = [
-  '#dc2626', // Red (Default)
+  '#dc2626', // Red
   '#2563eb', // Blue
   '#16a34a', // Green
   '#9333ea', // Purple

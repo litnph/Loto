@@ -1,9 +1,6 @@
 import { TicketData, CellValue } from '../types';
 
-// Generate a valid Vietnamese Loto ticket
-// Now generating 9 rows as requested.
-// Each row has 5 numbers. Total 45 numbers on the ticket.
-// Columns correspond to ranges: 1-9, 10-19, ..., 80-90.
+// Generate a valid Vietnamese Loto ticket (1 Lá = 9 rows)
 export const generateTicket = (): TicketData => {
   const rowsCount = 9;
   const numbersPerRow = 5;
@@ -24,75 +21,54 @@ export const generateTicket = (): TicketData => {
   // Generate rows
   for (let r = 0; r < rowsCount; r++) {
     let rowFilled = false;
-    // Retry loop to ensure we pick valid columns that haven't exhausted their numbers
     while (!rowFilled) {
         const availableCols = [0,1,2,3,4,5,6,7,8];
-        // Shuffle columns to pick random ones
         availableCols.sort(() => Math.random() - 0.5);
         
         const selectedCols: number[] = [];
         
-        // Try to pick 5 columns that have available numbers
         for (const col of availableCols) {
              if (selectedCols.length >= numbersPerRow) break;
-             
              const start = getRangeStart(col);
              const end = getRangeEnd(col);
-             
-             // Count used numbers in this column's range
              let usedCountInCol = 0;
              for(let n = start; n <= end; n++) {
                  if (usedNumbers.has(n)) usedCountInCol++;
              }
-             
              const totalInCol = (end - start + 1);
-             
-             // If this column still has space
              if (usedCountInCol < totalInCol) {
                  selectedCols.push(col);
              }
         }
         
-        // If we successfully found 5 valid columns
         if (selectedCols.length === numbersPerRow) {
             selectedCols.sort((a,b) => a-b);
-            
             for (const col of selectedCols) {
                 let num;
                 const start = getRangeStart(col);
                 const end = getRangeEnd(col);
-                // Find a random unused number in range
                 do {
                     num = Math.floor(Math.random() * (end - start + 1)) + start;
                 } while (usedNumbers.has(num));
-                
                 ticket[r][col] = num;
                 usedNumbers.add(num);
             }
             rowFilled = true;
-        } else {
-            // Corner case: random selection painted us into a corner (rare with 45/90 density).
-            // Just retry the loop for this row.
         }
     }
   }
 
-  // Sort numbers vertically within each column for better readability
+  // Sort numbers vertically
   for (let c = 0; c < 9; c++) {
       const numsInCol: number[] = [];
       const rowIndices: number[] = [];
-      
       for(let r = 0; r < rowsCount; r++) {
           if (ticket[r][c] !== null) {
               numsInCol.push(ticket[r][c] as number);
               rowIndices.push(r);
           }
       }
-      
-      // Sort values
       numsInCol.sort((a,b) => a-b);
-      
-      // Place them back in order
       rowIndices.forEach((r, i) => {
           ticket[r][c] = numsInCol[i];
       });
@@ -104,27 +80,33 @@ export const generateTicket = (): TicketData => {
   };
 };
 
-// Returns the array of winning numbers if won, otherwise null
-export const checkWin = (ticket: TicketData, markedNumbers: Set<number>): number[] | null => {
-  // Win condition: Any row is fully marked
-  for (const row of ticket.rows) {
-    const numbersInRow = row.filter((n): n is number => n !== null);
-    if (numbersInRow.length > 0 && numbersInRow.every(n => markedNumbers.has(n))) {
-      return numbersInRow;
-    }
+// Check win across ALL sheets a player has
+export const checkWin = (sheets: TicketData[], markedNumbers: Set<number>): number[] | null => {
+  for (const sheet of sheets) {
+      for (const row of sheet.rows) {
+        const numbersInRow = row.filter((n): n is number => n !== null);
+        if (numbersInRow.length > 0 && numbersInRow.every(n => markedNumbers.has(n))) {
+          return numbersInRow;
+        }
+      }
   }
   return null;
 };
 
-// Check if player is "waiting" (needs 1 more number in a row to win)
-// Assumes 5 numbers per row. Returns true if any row has exactly 4 marked numbers.
-export const checkWaiting = (ticket: TicketData, markedNumbers: Set<number>): boolean => {
-    for (const row of ticket.rows) {
-        const numbersInRow = row.filter((n): n is number => n !== null);
-        const markedCount = numbersInRow.filter(n => markedNumbers.has(n)).length;
-        if (numbersInRow.length === 5 && markedCount === 4) {
-            return true;
+// Check waiting status across ALL sheets
+export const checkWaiting = (sheets: TicketData[], markedNumbers: Set<number>): boolean => {
+    for (const sheet of sheets) {
+        for (const row of sheet.rows) {
+            const numbersInRow = row.filter((n): n is number => n !== null);
+            const markedCount = numbersInRow.filter(n => markedNumbers.has(n)).length;
+            if (numbersInRow.length === 5 && markedCount === 4) {
+                return true;
+            }
         }
     }
     return false;
+};
+
+export const formatCurrency = (amount: number): string => {
+    return new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(amount);
 };

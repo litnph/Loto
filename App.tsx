@@ -1,16 +1,14 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { generateTicket, checkWin, checkWaiting } from './utils/gameUtils';
-import { Player, RoomState, GameStatus, TOTAL_NUMBERS, CALL_INTERVAL_MS, TICKET_COLORS } from './types';
+import { generateTicket, checkWin, checkWaiting, formatCurrency } from './utils/gameUtils';
+import { Player, RoomState, GameStatus, TOTAL_NUMBERS, CALL_INTERVAL_MS, TICKET_COLORS, TicketData } from './types';
 import Lobby from './components/Lobby';
 import Ticket from './components/Ticket';
 import NumberBoard from './components/NumberBoard';
 import { generateMCCommentary } from './services/geminiService';
-import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, XCircle, Palette, Shuffle, X, Settings2, Flame } from 'lucide-react';
+import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, XCircle, Palette, Shuffle, X, Settings2, Flame, Coins, Plus, Minus, Eye } from 'lucide-react';
 import mqtt from 'mqtt';
 
-// Sử dụng Public Broker có hỗ trợ WebSockets Secure (WSS)
 const BROKER_URL = 'wss://broker.emqx.io:8084/mqtt'; 
-// Topic prefix để tránh trùng lặp trên public broker
 const TOPIC_PREFIX = 'loto-vui-v3';
 
 const App: React.FC = () => {
@@ -23,6 +21,8 @@ const App: React.FC = () => {
     winner: null,
     winningNumbers: [],
     mcCommentary: '',
+    betPrice: 10000, // Default 10k
+    pot: 0,
   });
 
   const [playerId, setPlayerId] = useState<string>('');
@@ -42,15 +42,11 @@ const App: React.FC = () => {
   const callIntervalRef = useRef<any>(null);
   const gameStateRef = useRef(gameState);
 
-  // Sync state ref for event handlers
   useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (clientRef.current) {
-          clientRef.current.end();
-      }
+      if (clientRef.current) clientRef.current.end();
       if (callIntervalRef.current) clearInterval(callIntervalRef.current);
       window.speechSynthesis.cancel();
     };
@@ -62,59 +58,33 @@ const App: React.FC = () => {
       const vs = window.speechSynthesis.getVoices();
       if (vs.length > 0) {
         setVoices(vs);
-        
-        // Auto-select best Vietnamese voice if not yet selected
         if (!selectedVoiceURI) {
             const viVoice = vs.find(v => v.name === 'Google Tiếng Việt') || 
                             vs.find(v => v.name.includes('Vietnamese') || v.name.includes('Tiếng Việt')) ||
                             vs.find(v => v.lang.includes('vi'));
-            if (viVoice) {
-                setSelectedVoiceURI(viVoice.voiceURI);
-            } else if (vs.length > 0) {
-                // Fallback to first voice if no Vietnamese found (user can change later)
-                setSelectedVoiceURI(vs[0].voiceURI);
-            }
+            if (viVoice) setSelectedVoiceURI(viVoice.voiceURI);
+            else if (vs.length > 0) setSelectedVoiceURI(vs[0].voiceURI);
         }
       }
     };
-
-    // Chrome loads voices asynchronously
     window.speechSynthesis.onvoiceschanged = loadVoices;
-    // Initial attempt
     loadVoices();
-
-    return () => {
-      window.speechSynthesis.onvoiceschanged = null;
-    };
-  }, [selectedVoiceURI]); // Depend on selectedVoiceURI to avoid overwriting user choice
+    return () => { window.speechSynthesis.onvoiceschanged = null; };
+  }, [selectedVoiceURI]);
 
   const speakText = useCallback((text: string) => {
     if (isMuted || !window.speechSynthesis) return;
-    
-    // Cancel any ongoing speech to prevent queue buildup
     window.speechSynthesis.cancel();
-
     const utterance = new SpeechSynthesisUtterance(text);
-    
-    // Force Lang Code
     utterance.lang = 'vi-VN'; 
-    
-    // Find the selected voice object
     const activeVoice = voices.find(v => v.voiceURI === selectedVoiceURI);
-
-    if (activeVoice) {
-        utterance.voice = activeVoice;
-        console.log("Speaking with:", activeVoice.name);
-    } else {
-        // Fallback logic if selection is invalid for some reason
+    if (activeVoice) utterance.voice = activeVoice;
+    else {
         const viVoice = voices.find(v => v.lang.includes('vi'));
         if (viVoice) utterance.voice = viVoice;
     }
-    
-    // Adjust rate: slightly slower for Bingo to be clear
     utterance.rate = 0.85; 
     utterance.pitch = 1.0;
-
     window.speechSynthesis.speak(utterance);
   }, [isMuted, voices, selectedVoiceURI]);
 
@@ -143,7 +113,6 @@ const App: React.FC = () => {
             setIsConnecting(false);
             setConnectionError('Lỗi kết nối máy chủ tin nhắn. Vui lòng thử lại.');
         });
-
         return client;
     } catch (err) {
         console.error("MQTT Setup Error", err);
@@ -164,17 +133,20 @@ const App: React.FC = () => {
     setPlayerId(myId);
 
     const client = setupMqttClient(myId, () => {
-        const myTicket = generateTicket();
+        const mySheet = generateTicket();
         const hostPlayer: Player = {
             id: myId,
             name: playerName,
             isHost: true,
             isBot: false,
-            ticket: myTicket,
+            sheets: [mySheet],
             markedNumbers: new Set(),
-            isReady: true, // Host automatically ready
+            isReady: true,
             color: TICKET_COLORS[0],
             isWaiting: false,
+            balance: 0,
+            sheetCount: 1,
+            status: 'playing',
         };
 
         const initialState: RoomState = {
@@ -186,10 +158,11 @@ const App: React.FC = () => {
             winner: null,
             winningNumbers: [],
             mcCommentary: 'Chào mừng! Mọi người hãy chọn vé và bấm Sẵn Sàng nhé.',
+            betPrice: 10000,
+            pot: 0,
         };
 
         setGameState(initialState);
-
         client.subscribe(getClientTopic(shortCode), (err) => {
             if (!err) publishState(client, shortCode, initialState);
         });
@@ -220,7 +193,7 @@ const App: React.FC = () => {
     const client = setupMqttClient(myId, () => {
         client.subscribe(getHostTopic(roomCode), (err) => {
             if (!err) {
-                 const myTicket = generateTicket();
+                 const mySheet = generateTicket();
                  const joinPayload = {
                      type: 'JOIN_REQUEST',
                      player: {
@@ -228,11 +201,14 @@ const App: React.FC = () => {
                          name: playerName,
                          isHost: false,
                          isBot: false,
-                         ticket: myTicket,
+                         sheets: [mySheet],
                          markedNumbers: [],
                          isReady: false,
                          color: TICKET_COLORS[Math.floor(Math.random() * TICKET_COLORS.length)],
                          isWaiting: false,
+                         balance: 0,
+                         sheetCount: 1,
+                         status: 'playing', // Will be corrected by host if game is running
                      }
                  };
                  client.publish(getClientTopic(roomCode), JSON.stringify(joinPayload));
@@ -254,93 +230,77 @@ const App: React.FC = () => {
   const handleToggleReady = () => {
     const me = gameState.players.find(p => p.id === playerId);
     if (!me) return;
-
     const newReadyStatus = !me.isReady;
-    
-    // Update Local Optimistically
-    setGameState(prev => ({
-        ...prev,
-        players: prev.players.map(p => p.id === playerId ? { ...p, isReady: newReadyStatus } : p)
-    }));
+    updatePlayerLocallyAndBroadcast(playerId, { isReady: newReadyStatus });
+  };
 
-    if (me.isHost) {
-        // If host, update and publish immediately
-        if (clientRef.current) {
-            const currentState = gameStateRef.current;
-            const newState = {
-                ...currentState,
-                players: currentState.players.map(p => p.id === playerId ? { ...p, isReady: newReadyStatus } : p)
-            };
-            publishState(clientRef.current, currentState.code, newState);
-        }
-    } else {
-        // If guest, send update to host
-        if (clientRef.current) {
-            clientRef.current.publish(getClientTopic(gameState.code), JSON.stringify({
-                type: 'PLAYER_UPDATE',
-                playerId: playerId,
-                changes: { isReady: newReadyStatus }
-            }));
-        }
-    }
+  const updatePlayerLocallyAndBroadcast = (pId: string, changes: Partial<Player>) => {
+      // Update Local
+      setGameState(prev => {
+          const updatedPlayers = prev.players.map(p => p.id === pId ? { ...p, ...changes } : p);
+          const newState = { ...prev, players: updatedPlayers };
+          // If I am host, broadcast state
+          const me = prev.players.find(p => p.id === playerId);
+          if (me?.isHost && clientRef.current) {
+              publishState(clientRef.current, prev.code, newState);
+          }
+          return newState;
+      });
+
+      // If I am guest, send update request
+      const me = gameState.players.find(p => p.id === playerId);
+      if (!me?.isHost && clientRef.current) {
+           clientRef.current.publish(getClientTopic(gameState.code), JSON.stringify({
+              type: 'PLAYER_UPDATE',
+              playerId: pId,
+              changes: changes
+          }));
+      }
   };
 
   const handleChangeTicket = () => {
       const me = gameState.players.find(p => p.id === playerId);
-      if (!me || me.isReady) return; // Cannot change if ready
-
-      const newTicket = generateTicket();
+      if (!me || me.isReady) return;
       
-      // Update Local
-      setGameState(prev => ({
-          ...prev,
-          players: prev.players.map(p => p.id === playerId ? { ...p, ticket: newTicket, markedNumbers: new Set() } : p)
-      }));
-
-      // Broadcast
-      if (me.isHost && clientRef.current) {
-          const currentState = gameStateRef.current;
-          const newState = {
-              ...currentState,
-              players: currentState.players.map(p => p.id === playerId ? { ...p, ticket: newTicket, markedNumbers: new Set() } : p)
-          };
-          publishState(clientRef.current, currentState.code, newState);
-      } else if (clientRef.current) {
-          clientRef.current.publish(getClientTopic(gameState.code), JSON.stringify({
-              type: 'PLAYER_UPDATE',
-              playerId: playerId,
-              changes: { ticket: newTicket, markedNumbers: [] }
-          }));
+      // Regenerate based on sheetCount
+      const newSheets: TicketData[] = [];
+      for(let i=0; i<me.sheetCount; i++) {
+          newSheets.push(generateTicket());
       }
+      
+      updatePlayerLocallyAndBroadcast(playerId, { sheets: newSheets, markedNumbers: new Set() });
+  };
+
+  const handleUpdateSheetCount = (delta: number) => {
+      const me = gameState.players.find(p => p.id === playerId);
+      if (!me || me.isReady) return;
+
+      const newCount = Math.max(1, Math.min(5, me.sheetCount + delta)); // Limit 1 to 5 sheets
+      if (newCount === me.sheetCount) return;
+
+      // Regenerate tickets
+      const newSheets: TicketData[] = [];
+      for(let i=0; i<newCount; i++) {
+          newSheets.push(generateTicket());
+      }
+
+      updatePlayerLocallyAndBroadcast(playerId, { sheetCount: newCount, sheets: newSheets, markedNumbers: new Set() });
   };
 
   const handleSelectColor = (selectedColor: string) => {
-      const me = gameState.players.find(p => p.id === playerId);
-      if (!me) return;
-
-      // Update Local
-      setGameState(prev => ({
-          ...prev,
-          players: prev.players.map(p => p.id === playerId ? { ...p, color: selectedColor } : p)
-      }));
-      
+      updatePlayerLocallyAndBroadcast(playerId, { color: selectedColor });
       setShowColorPicker(false);
+  };
 
-      // Broadcast
-      if (me.isHost && clientRef.current) {
-          const currentState = gameStateRef.current;
-          const newState = {
-              ...currentState,
-              players: currentState.players.map(p => p.id === playerId ? { ...p, color: selectedColor } : p)
-          };
-          publishState(clientRef.current, currentState.code, newState);
-      } else if (clientRef.current) {
-          clientRef.current.publish(getClientTopic(gameState.code), JSON.stringify({
-              type: 'PLAYER_UPDATE',
-              playerId: playerId,
-              changes: { color: selectedColor }
-          }));
-      }
+  const handleUpdateBetPrice = (newPrice: number) => {
+      const me = gameState.players.find(p => p.id === playerId);
+      if (!me?.isHost || gameState.status !== 'waiting') return;
+
+      setGameState(prev => {
+          const newState = { ...prev, betPrice: newPrice };
+          if(clientRef.current) publishState(clientRef.current, prev.code, newState);
+          return newState;
+      });
   };
 
   // --- MQTT Messaging Logic ---
@@ -365,9 +325,13 @@ const App: React.FC = () => {
 
           if (data.type === 'JOIN_REQUEST') {
               if (!currentState.players.some(p => p.id === data.player.id)) {
+                  // If game is playing, set new player as spectator
+                  const isLate = currentState.status === 'playing';
                   const newPlayer: Player = {
                       ...data.player,
-                      markedNumbers: new Set(data.player.markedNumbers)
+                      markedNumbers: new Set(data.player.markedNumbers),
+                      status: isLate ? 'spectating' : 'playing',
+                      isReady: false,
                   };
                   newState.players = [...currentState.players, newPlayer];
                   shouldUpdate = true;
@@ -379,7 +343,7 @@ const App: React.FC = () => {
                       return { 
                           ...p, 
                           markedNumbers: new Set<number>(data.markedNumbers),
-                          isWaiting: data.isWaiting // Receive waiting status from guest
+                          isWaiting: data.isWaiting 
                       };
                   }
                   return p;
@@ -387,9 +351,10 @@ const App: React.FC = () => {
               shouldUpdate = true;
           }
           else if (data.type === 'PLAYER_UPDATE') {
-              // Handle generic updates (Ready status, Ticket change, Color change)
               newState.players = currentState.players.map(p => {
                   if (p.id === data.playerId) {
+                      // Prevent changing sheet count if already ready (double check)
+                      if (data.changes.sheetCount && p.isReady) return p;
                       return { ...p, ...data.changes };
                   }
                   return p;
@@ -398,15 +363,21 @@ const App: React.FC = () => {
           }
           else if (data.type === 'BINGO_CLAIM') {
               const player = currentState.players.find(p => p.id === data.playerId);
-              if (player) {
+              if (player && currentState.status === 'playing') {
                   const claimedMarked = new Set<number>(data.markedNumbers);
-                  // Verify win
-                  const winningRow = checkWin(player.ticket, claimedMarked);
+                  const winningRow = checkWin(player.sheets, claimedMarked);
                   if (winningRow) {
                       newState.status = 'ended';
                       newState.winner = player;
                       newState.winningNumbers = winningRow;
                       newState.mcCommentary = `CHÚC MỪNG! ${player.name} ĐÃ KINH RỒI!`;
+                      
+                      // Award Pot
+                      newState.players = newState.players.map(p => 
+                          p.id === player.id ? { ...p, balance: p.balance + newState.pot } : p
+                      );
+                      newState.pot = 0; // Reset pot display (or keep it to show what was won)
+
                       if (callIntervalRef.current) clearInterval(callIntervalRef.current);
                       shouldUpdate = true;
                   }
@@ -446,18 +417,32 @@ const App: React.FC = () => {
   // --- Game Loop (Host Only) ---
 
   const startGame = useCallback(() => {
-    // Check if everyone is ready
-    const allReady = gameStateRef.current.players.every(p => p.isReady);
+    const playingPlayers = gameStateRef.current.players.filter(p => p.status === 'playing');
+    const allReady = playingPlayers.length > 0 && playingPlayers.every(p => p.isReady);
+    
     if (!allReady) {
         alert("Vẫn còn người chơi chưa sẵn sàng!");
         return;
     }
 
     setGameState(prev => {
+        // Calculate Pot and deduct balances
+        let roundPot = 0;
+        const updatedPlayers = prev.players.map(p => {
+            if (p.status === 'playing') {
+                const cost = p.sheetCount * prev.betPrice;
+                roundPot += cost;
+                return { ...p, balance: p.balance - cost };
+            }
+            return p;
+        });
+
         const newState: RoomState = {
             ...prev,
+            players: updatedPlayers,
             status: 'playing',
             mcCommentary: 'Trò chơi bắt đầu! Chuẩn bị dò số nào...',
+            pot: roundPot
         };
         speakText("Trò chơi bắt đầu!");
         if (clientRef.current) publishState(clientRef.current, prev.code, newState);
@@ -533,14 +518,13 @@ const App: React.FC = () => {
       return;
     }
     const me = gameState.players.find(p => p.id === playerId);
-    if (!me) return;
+    if (!me || me.status === 'spectating') return;
 
     const newMarked = new Set<number>(me.markedNumbers);
     if (newMarked.has(num)) newMarked.delete(num);
     else newMarked.add(num);
 
-    // Calculate Waiting Status
-    const isWaiting = checkWaiting(me.ticket, newMarked);
+    const isWaiting = checkWaiting(me.sheets, newMarked);
 
     setGameState(prev => {
       const updatedPlayers = prev.players.map(p => 
@@ -556,16 +540,16 @@ const App: React.FC = () => {
             type: 'MARK_UPDATE',
             playerId: playerId,
             markedNumbers: Array.from(newMarked),
-            isWaiting: isWaiting // Send waiting status to host
+            isWaiting: isWaiting
         }));
     }
   };
 
   const handleKinhCall = () => {
     const me = gameState.players.find(p => p.id === playerId);
-    if (!me) return;
+    if (!me || me.status === 'spectating') return;
 
-    const winningRow = checkWin(me.ticket, me.markedNumbers);
+    const winningRow = checkWin(me.sheets, me.markedNumbers);
 
     if (winningRow) {
         if (me.isHost) {
@@ -576,6 +560,10 @@ const App: React.FC = () => {
                         winner: me,
                         winningNumbers: winningRow,
                         mcCommentary: `CHÚC MỪNG! ${me.name} ĐÃ KINH RỒI!`,
+                        pot: 0,
+                        players: prev.players.map(p => 
+                          p.id === me.id ? { ...p, balance: p.balance + prev.pot } : p
+                        )
                     };
                     if (clientRef.current) publishState(clientRef.current, prev.code, newState);
                     if (callIntervalRef.current) clearInterval(callIntervalRef.current);
@@ -608,11 +596,13 @@ const App: React.FC = () => {
             winner: null,
             winningNumbers: [],
             mcCommentary: 'Bắt đầu ván mới nào!',
+            pot: 0, // Reset pot
             players: prev.players.map(p => ({
                 ...p,
                 markedNumbers: new Set(),
-                isReady: p.id === playerId, // Host automatically ready, others reset
+                isReady: p.id === playerId,
                 isWaiting: false,
+                status: 'playing', // Everyone back to playing status
             }))
         };
         if (clientRef.current) publishState(clientRef.current, prev.code, newState);
@@ -623,7 +613,9 @@ const App: React.FC = () => {
   // --- Render ---
   const me = gameState.players.find(p => p.id === playerId);
   const isHost = me?.isHost;
-  const allPlayersReady = gameState.players.length > 1 && gameState.players.every(p => p.isReady);
+  const isSpectator = me?.status === 'spectating';
+  const allPlayersReady = gameState.players.filter(p => p.status === 'playing').length > 0 && 
+                          gameState.players.filter(p => p.status === 'playing').every(p => p.isReady);
 
   if (gameState.status === 'lobby') {
     return (
@@ -651,6 +643,13 @@ const App: React.FC = () => {
             <span>Loto Vui Online</span>
           </div>
           <div className="flex items-center gap-4">
+              {/* My Balance Display */}
+              {me && (
+                  <div style={{background: 'rgba(255,255,255,0.2)', padding: '0.25rem 0.75rem', borderRadius: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 'bold'}}>
+                      <Coins size={16} className="text-secondary" />
+                      {formatCurrency(me.balance)}
+                  </div>
+              )}
               <button onClick={() => setIsMuted(!isMuted)} className="btn" style={{padding: '0.25rem', background: 'transparent', border: '1px solid #white', color: 'white'}}>
                  {isMuted ? <VolumeX size={20}/> : <Volume2 size={20}/>}
               </button>
@@ -667,11 +666,28 @@ const App: React.FC = () => {
         {/* Waiting Room */}
         {gameState.status === 'waiting' && (
           <div style={{display: 'flex', flexDirection: 'column', gap: '2rem'}}>
-            <div className="card text-center">
+            <div className="card text-center" style={{display: 'flex', flexDirection: 'column', alignItems: 'center'}}>
                 <h2 style={{fontSize: '1.5rem', fontWeight: 'bold', marginBottom: '1rem'}}>Phòng Chờ</h2>
-                <div style={{background: '#f3f4f6', padding: '1rem', borderRadius: '8px', display: 'inline-block'}}>
-                    <p style={{color: '#6b7280', marginBottom: '0.25rem'}}>Mã Phòng:</p>
-                    <p style={{fontSize: '2rem', fontFamily: 'monospace', fontWeight: 'bold', color: '#dc2626'}}>{gameState.code}</p>
+                <div style={{background: '#f3f4f6', padding: '0.5rem 1.5rem', borderRadius: '8px', display: 'inline-block', marginBottom: '1rem'}}>
+                    <p style={{color: '#6b7280', fontSize: '0.875rem'}}>Mã Phòng</p>
+                    <p style={{fontSize: '2rem', fontFamily: 'monospace', fontWeight: 'bold', color: '#dc2626', lineHeight: 1}}>{gameState.code}</p>
+                </div>
+                
+                {/* Bet Price Setting */}
+                <div style={{display: 'flex', alignItems: 'center', gap: '1rem', background: '#fff7ed', padding: '0.75rem', borderRadius: '0.5rem', border: '1px solid #fed7aa'}}>
+                    <Coins size={20} className="text-secondary" />
+                    <span style={{fontWeight: 'bold', color: '#9a3412'}}>Tiền cược/Lá:</span>
+                    {isHost ? (
+                        <input 
+                            type="number" 
+                            step="1000"
+                            value={gameState.betPrice}
+                            onChange={(e) => handleUpdateBetPrice(Number(e.target.value))}
+                            style={{padding: '0.25rem', borderRadius: '0.25rem', border: '1px solid #d1d5db', width: '100px', fontWeight: 'bold'}}
+                        />
+                    ) : (
+                        <span style={{fontWeight: 'bold', fontSize: '1.1rem'}}>{formatCurrency(gameState.betPrice)}</span>
+                    )}
                 </div>
             </div>
 
@@ -681,37 +697,39 @@ const App: React.FC = () => {
                     {me && (
                         <>
                         <div className="card" style={{padding: '1rem', borderTop: `4px solid ${me.color}`}}>
-                            <h3 className="font-bold mb-2">Vé Của Bạn</h3>
-                            <Ticket 
-                                ticket={me.ticket} 
-                                markedNumbers={me.markedNumbers} 
-                                disabled={true}
-                                color={me.color}
-                            />
+                            <div className="flex justify-between items-center mb-2">
+                                <h3 className="font-bold">Vé Của Bạn</h3>
+                                <div className="flex items-center gap-2 text-sm bg-gray-100 px-2 py-1 rounded">
+                                    <span>Số lá: <b>{me.sheetCount}</b></span>
+                                    {!me.isReady && (
+                                        <div className="flex gap-1">
+                                            <button onClick={() => handleUpdateSheetCount(-1)} className="p-1 hover:bg-gray-200 rounded"><Minus size={14}/></button>
+                                            <button onClick={() => handleUpdateSheetCount(1)} className="p-1 hover:bg-gray-200 rounded"><Plus size={14}/></button>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                            
+                            {/* Preview first sheet only to save space */}
+                            <div style={{opacity: 0.8, transform: 'scale(0.9)', transformOrigin: 'top left'}}>
+                                <Ticket ticket={me.sheets[0]} markedNumbers={me.markedNumbers} disabled={true} color={me.color} />
+                            </div>
+                            {me.sheetCount > 1 && <div className="text-center text-xs text-muted mt-1">+ {me.sheetCount - 1} lá nữa...</div>}
                             
                             <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginTop: '1rem'}}>
-                                <button 
-                                    onClick={handleChangeTicket} 
-                                    disabled={me.isReady}
-                                    className="btn"
-                                    style={{background: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db'}}
-                                >
+                                <button onClick={handleChangeTicket} disabled={me.isReady} className="btn" style={{background: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db'}}>
                                     <Shuffle size={18} /> Đổi Số
                                 </button>
-                                <button 
-                                    onClick={() => setShowColorPicker(true)}
-                                    className="btn"
-                                    style={{background: me.color, color: 'white'}}
-                                >
+                                <button onClick={() => setShowColorPicker(true)} className="btn" style={{background: me.color, color: 'white'}}>
                                     <Palette size={18} /> Đổi Màu
                                 </button>
                             </div>
                             
-                            <button 
-                                onClick={handleToggleReady}
-                                className={`btn w-full ${me.isReady ? 'btn-primary' : ''}`}
-                                style={{marginTop: '1rem', background: me.isReady ? '#16a34a' : '#9ca3af', color: 'white'}}
-                            >
+                            <div className="mt-4 p-2 bg-red-50 rounded border border-red-100 text-center text-sm text-red-800">
+                                Tổng cược: <b>{formatCurrency(me.sheetCount * gameState.betPrice)}</b>
+                            </div>
+
+                            <button onClick={handleToggleReady} className={`btn w-full ${me.isReady ? 'btn-primary' : ''}`} style={{marginTop: '1rem', background: me.isReady ? '#16a34a' : '#9ca3af', color: 'white'}}>
                                 {me.isReady ? <><CheckCircle2 /> ĐÃ SẴN SÀNG</> : 'BẤM ĐỂ SẴN SÀNG'}
                             </button>
                         </div>
@@ -731,16 +749,21 @@ const App: React.FC = () => {
                                 <div key={p.id} className="player-item" style={{justifyContent: 'space-between'}}>
                                     <div className="flex items-center gap-2">
                                         <div className="avatar" style={{background: p.color}}>{p.name.charAt(0).toUpperCase()}</div>
-                                        <span style={{fontWeight: 'bold'}}>{p.name} {p.isHost && '👑'}</span>
+                                        <div>
+                                            <span style={{fontWeight: 'bold'}}>{p.name}</span>
+                                            <div className="text-xs text-muted flex items-center gap-1">
+                                                <Coins size={10} /> {formatCurrency(p.balance)}
+                                            </div>
+                                        </div>
                                     </div>
-                                    <div>
+                                    <div className="text-right">
                                         {p.isReady ? (
                                             <span style={{color: '#16a34a', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.85rem'}}>
                                                 <CheckCircle2 size={16} /> Sẵn sàng
                                             </span>
                                         ) : (
                                             <span style={{color: '#9ca3af', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.85rem'}}>
-                                                <Loader2 size={16} className="animate-spin" /> Đang chọn...
+                                                <Loader2 size={16} className="animate-spin" /> Đang chọn ({p.sheetCount} lá)
                                             </span>
                                         )}
                                     </div>
@@ -757,7 +780,7 @@ const App: React.FC = () => {
                                 className="btn btn-primary w-full"
                                 style={{padding: '1rem', fontSize: '1.2rem', opacity: !allPlayersReady ? 0.5 : 1}}
                             >
-                                {!allPlayersReady ? 'CHỜ MỌI NGƯỜI SẴN SÀNG...' : <><Play size={24}/> BẮT ĐẦU NGAY</>}
+                                {!allPlayersReady ? 'CHỜ MỌI NGƯỜI SẴN SÀNG...' : <><Play size={24}/> BẮT ĐẦU VÁN ({formatCurrency(gameState.players.filter(p => p.status === 'playing').reduce((sum, p) => sum + (p.sheetCount * gameState.betPrice), 0))})</>}
                             </button>
                         </div>
                      ) : (
@@ -768,31 +791,18 @@ const App: React.FC = () => {
                 </div>
             </div>
             
-            {/* Color Picker Modal */}
             {showColorPicker && (
                 <div className="overlay">
                     <div className="modal" style={{maxWidth: '20rem'}}>
                         <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
                             <h3 className="font-bold" style={{margin: 0, fontSize: '1.25rem'}}>Chọn Màu Vé</h3>
-                            <button className="btn-close" onClick={() => setShowColorPicker(false)}>
-                                <X size={20} />
-                            </button>
+                            <button className="btn-close" onClick={() => setShowColorPicker(false)}><X size={20} /></button>
                         </div>
-                        
                         <div className="color-grid">
                             {TICKET_COLORS.map(color => (
-                                <div
-                                    key={color}
-                                    className={`color-swatch ${me?.color === color ? 'active' : ''}`}
-                                    style={{backgroundColor: color}}
-                                    onClick={() => handleSelectColor(color)}
-                                />
+                                <div key={color} className={`color-swatch ${me?.color === color ? 'active' : ''}`} style={{backgroundColor: color}} onClick={() => handleSelectColor(color)} />
                             ))}
                         </div>
-                        
-                        <p className="text-center text-muted" style={{fontSize: '0.875rem'}}>
-                            Chọn màu để dễ nhận biết vé của bạn.
-                        </p>
                     </div>
                 </div>
             )}
@@ -802,24 +812,36 @@ const App: React.FC = () => {
         {/* Play Area */}
         {(gameState.status === 'playing' || gameState.status === 'ended') && (
           <div className="grid-layout">
-            {/* LEFT COLUMN */}
+            {/* LEFT COLUMN: TICKETS */}
             <div style={{display: 'flex', flexDirection: 'column', gap: '1.5rem'}}>
                   <div>
                     <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem'}}>
                         <UserCircle2 size={24} style={{color: me?.color || '#dc2626'}} /> 
                         <h3 className="font-bold" style={{fontSize: '1.25rem'}}>Vé Của Bạn ({me?.name})</h3>
                     </div>
-                    {me && (
-                    <Ticket 
-                        ticket={me.ticket} 
-                        markedNumbers={me.markedNumbers} 
-                        onNumberClick={handleMarkNumber}
-                        disabled={gameState.status === 'ended'}
-                        color={me.color}
-                    />
+                    
+                    {me && isSpectator ? (
+                        <div className="card text-center p-8 bg-gray-100 border-dashed border-2 border-gray-300">
+                             <Eye size={48} className="mx-auto text-gray-400 mb-2" />
+                             <h3 className="text-lg font-bold text-gray-600">Chế độ Khán Giả</h3>
+                             <p className="text-gray-500">Bạn vào sau khi ván đã bắt đầu. Vui lòng đợi ván sau nhé!</p>
+                        </div>
+                    ) : (
+                        me && me.sheets.map((sheet, idx) => (
+                            <div key={sheet.id} style={{marginBottom: '1rem'}}>
+                                <div className="text-xs font-bold text-muted mb-1 ml-1">Lá {idx + 1}</div>
+                                <Ticket 
+                                    ticket={sheet} 
+                                    markedNumbers={me.markedNumbers} 
+                                    onNumberClick={handleMarkNumber}
+                                    disabled={gameState.status === 'ended' || isSpectator}
+                                    color={me.color}
+                                />
+                            </div>
+                        ))
                     )}
                     
-                    {gameState.status === 'playing' && (
+                    {gameState.status === 'playing' && !isSpectator && (
                         <button
                             onClick={handleKinhCall}
                             className="btn btn-warning w-full"
@@ -832,9 +854,19 @@ const App: React.FC = () => {
                   </div>
             </div>
 
-            {/* RIGHT COLUMN */}
+            {/* RIGHT COLUMN: INFO & BOARD */}
             <div style={{display: 'flex', flexDirection: 'column', gap: '1.5rem'}}>
-                {/* 1. MC Caller Section */}
+                
+                {/* Pot Display */}
+                <div className="card bg-yellow-50 border-yellow-200 text-center p-4">
+                    <div className="text-xs text-yellow-800 uppercase font-bold tracking-wider">Tổng Giải Thưởng (Hũ)</div>
+                    <div className="text-3xl font-extrabold text-yellow-600 flex items-center justify-center gap-2">
+                        <Coins size={32} />
+                        {formatCurrency(gameState.pot)}
+                    </div>
+                </div>
+
+                {/* MC Section */}
                 <div className="mc-section" style={{marginBottom: 0}}>
                     <div className="mc-title">
                         <div className="flex flex-col items-center">
@@ -842,29 +874,15 @@ const App: React.FC = () => {
                                 <Volume2 size={20} />
                                 <span>MC Gemini</span>
                             </div>
-                            
-                            {/* Voice Selector Dropdown */}
                             <div className="flex items-center gap-1 mt-1" style={{fontSize: '0.75rem'}}>
                                 <Settings2 size={12} className="text-muted" />
                                 <select 
                                     value={selectedVoiceURI} 
                                     onChange={(e) => setSelectedVoiceURI(e.target.value)}
-                                    style={{
-                                        border: 'none', 
-                                        background: 'transparent', 
-                                        color: '#6b7280', 
-                                        maxWidth: '150px',
-                                        fontSize: '0.75rem',
-                                        cursor: 'pointer',
-                                        outline: 'none'
-                                    }}
+                                    style={{border: 'none', background: 'transparent', color: '#6b7280', maxWidth: '150px', fontSize: '0.75rem', cursor: 'pointer', outline: 'none'}}
                                 >
                                     {voices.length === 0 && <option value="">Đang tải giọng...</option>}
-                                    {voices.map(v => (
-                                        <option key={v.voiceURI} value={v.voiceURI}>
-                                            {v.name}
-                                        </option>
-                                    ))}
+                                    {voices.map(v => <option key={v.voiceURI} value={v.voiceURI}>{v.name}</option>)}
                                 </select>
                             </div>
                         </div>
@@ -887,17 +905,17 @@ const App: React.FC = () => {
                     )}
                 </div>
 
-                {/* 2. Player List (Moved Up) */}
+                {/* Player List */}
                 <div className="card" style={{padding: '1rem'}}>
                     <h3 className="font-bold" style={{marginBottom: '0.75rem', display: 'flex', alignItems: 'center'}}>
                         <Users size={20} style={{marginRight: '0.5rem', color: '#3b82f6'}} />
-                        Người Chơi ({gameState.players.length})
+                        Bảng Xếp Hạng
                     </h3>
                     <div className="player-list custom-scrollbar">
-                        {gameState.players.map(p => {
+                        {gameState.players.sort((a,b) => b.balance - a.balance).map(p => {
                                 const markedCount = p.markedNumbers.size;
                                 return (
-                                <div key={p.id} className={`player-item ${p.id === playerId ? 'is-me' : ''}`}>
+                                <div key={p.id} className={`player-item ${p.id === playerId ? 'is-me' : ''}`} style={{opacity: p.status === 'spectating' ? 0.6 : 1}}>
                                     <div style={{display: 'flex', alignItems: 'center', gap: '0.75rem'}}>
                                         <div className="avatar" style={{background: p.color}}>
                                             {p.name.charAt(0).toUpperCase()}
@@ -906,20 +924,23 @@ const App: React.FC = () => {
                                             <span style={{fontWeight: 'bold', color: p.id === playerId ? 'black' : '#4b5563'}}>
                                                 {p.name}
                                             </span>
-                                            {p.isHost && <span style={{fontSize: '0.75rem', color: '#ca8a04'}}>Chủ phòng</span>}
+                                            <span style={{fontSize: '0.7rem', color: p.balance >= 0 ? 'green' : 'red', fontWeight: 'bold'}}>
+                                                {formatCurrency(p.balance)}
+                                            </span>
                                         </div>
                                     </div>
                                     
                                     <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
-                                        {/* Waiting Indicator */}
-                                        {p.isWaiting && (
-                                            <div className="badge-waiting">
-                                                <Flame size={12} fill="#d97706" /> CHỜ
+                                        {p.status === 'spectating' ? (
+                                             <div className="text-xs bg-gray-200 px-2 py-1 rounded">Xem</div>
+                                        ) : (
+                                            <>
+                                            {p.isWaiting && <div className="badge-waiting"><Flame size={12} fill="#d97706" /> CHỜ</div>}
+                                            <div style={{fontSize: '0.75rem', padding: '2px 6px', background: 'white', border: '1px solid #e5e7eb', borderRadius: '4px'}}>
+                                                {markedCount} số
                                             </div>
+                                            </>
                                         )}
-                                        <div style={{fontSize: '0.75rem', padding: '2px 6px', background: 'white', border: '1px solid #e5e7eb', borderRadius: '4px'}}>
-                                            {markedCount} số
-                                        </div>
                                     </div>
                                 </div>
                                 )
@@ -927,7 +948,6 @@ const App: React.FC = () => {
                     </div>
                 </div>
 
-                {/* 3. Number Board (Moved Down) */}
                 <NumberBoard calledNumbers={gameState.calledNumbers} currentNumber={gameState.currentNumber} />
 
             </div>
@@ -939,35 +959,29 @@ const App: React.FC = () => {
                     <Trophy size={48} style={{color: '#ca8a04'}} />
                   </div>
                   <h2 style={{fontSize: '2.25rem', fontWeight: '800', color: '#dc2626', marginBottom: '0.5rem', textTransform: 'uppercase'}}>Chiến Thắng!</h2>
-                  <p style={{color: '#4b5563', fontSize: '1.125rem', marginBottom: '1.5rem'}}>
+                  <p style={{color: '#4b5563', fontSize: '1.125rem', marginBottom: '0.5rem'}}>
                     Chúc mừng <span style={{fontWeight: 'bold', color: 'black'}}>{gameState.winner.name}</span> đã Kinh!
                   </p>
+                  <p style={{fontSize: '1.25rem', color: '#16a34a', fontWeight: 'bold', marginBottom: '1.5rem'}}>
+                      + {formatCurrency(gameState.players.find(p => p.id === gameState.winner?.id)?.balance || 0)}
+                  </p>
                   
-                  {/* Winning Numbers Display */}
                   <div style={{marginBottom: '2rem'}}>
                       <p style={{fontSize: '0.875rem', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em'}}>Hàng Số Chiến Thắng</p>
                       <div className="win-numbers-grid">
                           {gameState.winningNumbers.sort((a,b) => a-b).map(num => (
-                              <div key={num} className="win-number-ball">
-                                  {num}
-                              </div>
+                              <div key={num} className="win-number-ball">{num}</div>
                           ))}
                       </div>
                   </div>
                   
                   {isHost ? (
-                      <button 
-                        onClick={resetGame}
-                        className="btn btn-primary w-full"
-                        style={{padding: '1rem', fontSize: '1.1rem'}}
-                      >
-                        <RefreshCw size={20} />
-                        Chơi Ván Mới
+                      <button onClick={resetGame} className="btn btn-primary w-full" style={{padding: '1rem', fontSize: '1.1rem'}}>
+                        <RefreshCw size={20} /> Chơi Ván Mới
                       </button>
                   ) : (
                       <div style={{display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', color: '#6b7280'}}>
-                          <Loader2 className="animate-spin" size={16} />
-                          <span>Chờ chủ phòng bắt đầu lại...</span>
+                          <Loader2 className="animate-spin" size={16} /> <span>Chờ chủ phòng bắt đầu lại...</span>
                       </div>
                   )}
                 </div>
