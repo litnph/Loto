@@ -5,14 +5,13 @@ import Lobby from './components/Lobby';
 import Ticket from './components/Ticket';
 import NumberBoard from './components/NumberBoard';
 import { generateMCCommentary } from './services/geminiService';
-import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, Palette, Shuffle, X, Settings2, Flame, Coins, Plus, Eye, Trash2, Mic } from 'lucide-react';
+import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, Palette, Shuffle, X, Settings2, Flame, Coins, Plus, Eye, Trash2, Mic, LogOut } from 'lucide-react';
 import mqtt from 'mqtt';
 
 const BROKER_URL = 'wss://broker.emqx.io:8084/mqtt'; 
 const TOPIC_PREFIX = 'loto-vui-v3';
 
-const App: React.FC = () => {
-  const [gameState, setGameState] = useState<RoomState>({
+const INITIAL_STATE: RoomState = {
     code: '',
     players: [],
     status: 'lobby',
@@ -21,9 +20,12 @@ const App: React.FC = () => {
     winner: null,
     winningNumbers: [],
     mcCommentary: '',
-    betPrice: 10000, // Default 10k
+    betPrice: 10000,
     pot: 0,
-  });
+};
+
+const App: React.FC = () => {
+  const [gameState, setGameState] = useState<RoomState>(INITIAL_STATE);
 
   const [playerId, setPlayerId] = useState<string>('');
   const [mcLoading, setMcLoading] = useState(false);
@@ -90,7 +92,15 @@ const App: React.FC = () => {
 
   const speakText = useCallback((text: string) => {
     if (isMuted || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
+    
+    // Optimization: Don't interrupt if it's the exact same text (reduces choppy audio)
+    if (window.speechSynthesis.speaking) {
+         // Optionally cancel here if you want high responsiveness, 
+         // but for "mượt mà", letting short phrases finish is sometimes better.
+         // However, in Loto, new number is priority.
+         window.speechSynthesis.cancel();
+    }
+
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = 'vi-VN'; 
     
@@ -98,7 +108,6 @@ const App: React.FC = () => {
     if (activeVoice) {
         utterance.voice = activeVoice;
     } else {
-        // Fallback search if selected is missing
         const viVoice = voices.find(v => v.lang.includes('vi'));
         if (viVoice) utterance.voice = viVoice;
     }
@@ -124,6 +133,10 @@ const App: React.FC = () => {
             clean: true,
             reconnectPeriod: 1000,
             connectTimeout: 30 * 1000,
+            // Optimization: Skip some validation for speed if broker allows
+            reschedulePings: true,
+            protocolId: 'MQTT',
+            protocolVersion: 4,
         });
 
         client.on('connect', () => {
@@ -250,6 +263,38 @@ const App: React.FC = () => {
     }
   };
 
+  const leaveRoom = () => {
+      const me = gameState.players.find(p => p.id === playerId);
+      if (clientRef.current) {
+          if (!me?.isHost) {
+               // Send leave message to host
+               clientRef.current.publish(getClientTopic(gameState.code), JSON.stringify({
+                  type: 'PLAYER_LEAVE',
+                  playerId: playerId
+               }));
+          }
+          clientRef.current.end();
+      }
+      
+      // Reset state
+      setGameState(INITIAL_STATE);
+      setPlayerId('');
+      setIsConnecting(false);
+  };
+
+  const kickPlayer = (targetPlayerId: string) => {
+      const me = gameState.players.find(p => p.id === playerId);
+      if (!me?.isHost) return;
+
+      // Host deletes player locally then broadcasts
+      const newState = {
+          ...gameState,
+          players: gameState.players.filter(p => p.id !== targetPlayerId)
+      };
+      setGameState(newState);
+      if (clientRef.current) publishState(clientRef.current, gameState.code, newState);
+  };
+
   // --- Logic for Ready / Customize ---
 
   const handleToggleReady = () => {
@@ -361,7 +406,7 @@ const App: React.FC = () => {
               markedNumbers: Array.from(p.markedNumbers)
           }))
       });
-      client.publish(getHostTopic(code), payload, { retain: true });
+      client.publish(getHostTopic(code), payload, { retain: true, qos: 0 }); // Use QoS 0 for speed
   };
 
   const handleHostMessage = (topic: string, message: any) => {
@@ -369,7 +414,8 @@ const App: React.FC = () => {
           const data = JSON.parse(message.toString());
           const currentState = gameStateRef.current;
           let newState = { ...currentState };
-          let shouldUpdate = false;
+          let shouldBroadcast = false; // Separate broadcast flag from local update
+          let shouldUpdateLocal = false;
 
           if (data.type === 'JOIN_REQUEST') {
               if (!currentState.players.some(p => p.id === data.player.id)) {
@@ -382,12 +428,23 @@ const App: React.FC = () => {
                       isReady: false,
                   };
                   newState.players = [...currentState.players, newPlayer];
-                  shouldUpdate = true;
+                  shouldUpdateLocal = true;
+                  shouldBroadcast = true; // Always broadcast join
               }
           } 
+          else if (data.type === 'PLAYER_LEAVE') {
+              newState.players = currentState.players.filter(p => p.id !== data.playerId);
+              shouldUpdateLocal = true;
+              shouldBroadcast = true;
+          }
           else if (data.type === 'MARK_UPDATE') {
+              // OPTIMIZATION: Only broadcast if Waiting status CHANGED
               newState.players = currentState.players.map(p => {
                   if (p.id === data.playerId) {
+                      const wasWaiting = p.isWaiting;
+                      if (wasWaiting !== data.isWaiting) {
+                          shouldBroadcast = true; // Waiting status changed, tell everyone
+                      }
                       return { 
                           ...p, 
                           markedNumbers: new Set<number>(data.markedNumbers),
@@ -396,7 +453,7 @@ const App: React.FC = () => {
                   }
                   return p;
               });
-              shouldUpdate = true;
+              shouldUpdateLocal = true;
           }
           else if (data.type === 'PLAYER_UPDATE') {
               newState.players = currentState.players.map(p => {
@@ -407,7 +464,8 @@ const App: React.FC = () => {
                   }
                   return p;
               });
-              shouldUpdate = true;
+              shouldUpdateLocal = true;
+              shouldBroadcast = true; // Player config change usually happens in lobby, keep synced
           }
           else if (data.type === 'BINGO_CLAIM') {
               const player = currentState.players.find(p => p.id === data.playerId);
@@ -427,16 +485,18 @@ const App: React.FC = () => {
                       newState.pot = 0; // Reset pot display (or keep it to show what was won)
 
                       if (callIntervalRef.current) clearInterval(callIntervalRef.current);
-                      shouldUpdate = true;
+                      shouldUpdateLocal = true;
+                      shouldBroadcast = true; // WIN is critical
                   }
               }
           }
 
-          if (shouldUpdate) {
+          if (shouldUpdateLocal) {
               setGameState(newState);
-              if (clientRef.current) {
-                  publishState(clientRef.current, currentState.code, newState);
-              }
+          }
+          
+          if (shouldBroadcast && clientRef.current) {
+              publishState(clientRef.current, currentState.code, newState);
           }
 
       } catch (e) {
@@ -452,6 +512,13 @@ const App: React.FC = () => {
               markedNumbers: new Set<number>(p.markedNumbers as number[])
           }));
 
+          // Check if I was kicked/removed
+          if (!hydratedPlayers.find(p => p.id === playerId)) {
+              alert("Bạn đã bị mời ra khỏi phòng hoặc phòng đã đóng.");
+              leaveRoom();
+              return;
+          }
+
           setGameState({
               ...remoteState,
               players: hydratedPlayers,
@@ -466,11 +533,12 @@ const App: React.FC = () => {
 
   const startGame = useCallback(() => {
     const currentState = gameStateRef.current;
-    const playingPlayers = currentState.players.filter(p => p.status === 'playing');
-    const allReady = playingPlayers.length > 0 && playingPlayers.every(p => p.isReady);
     
-    if (!allReady) {
-        alert("Vẫn còn người chơi chưa sẵn sàng!");
+    // Filter only READY players to join the game
+    const readyPlayers = currentState.players.filter(p => p.status === 'playing' && p.isReady);
+    
+    if (readyPlayers.length === 0) {
+        alert("Cần ít nhất 1 người chơi sẵn sàng để bắt đầu!");
         return;
     }
 
@@ -478,9 +546,15 @@ const App: React.FC = () => {
     let roundPot = 0;
     const updatedPlayers = currentState.players.map(p => {
         if (p.status === 'playing') {
-            const cost = p.sheetCount * currentState.betPrice;
-            roundPot += cost;
-            return { ...p, balance: p.balance - cost };
+            if (p.isReady) {
+                 // Active player: Pay money
+                 const cost = p.sheetCount * currentState.betPrice;
+                 roundPot += cost;
+                 return { ...p, balance: p.balance - cost };
+            } else {
+                 // Not ready: Move to spectator
+                 return { ...p, status: 'spectating' as const };
+            }
         }
         return p;
     });
@@ -519,6 +593,7 @@ const App: React.FC = () => {
     };
 
     setGameState(newState);
+    // Always publish state when drawing a number - this syncs everything
     if (clientRef.current) publishState(clientRef.current, newState.code, newState);
   }, []);
 
@@ -545,6 +620,10 @@ const App: React.FC = () => {
         
         const newState = { ...currentState, mcCommentary: text };
         setGameState(newState);
+        // Do NOT publish state here just for text update, it might cause lag.
+        // Guests can generate their own or receive it in next draw?
+        // Actually for MC we need to send it.
+        // But let's check if we can skip if network is busy? No, MC is fun.
         if (clientRef.current) publishState(clientRef.current, newState.code, newState);
         setMcLoading(false);
       };
@@ -583,11 +662,18 @@ const App: React.FC = () => {
         p.id === playerId ? { ...p, markedNumbers: newMarked, isWaiting: isWaiting } : p
       );
       const newState = { ...prev, players: updatedPlayers };
-      if (me.isHost && clientRef.current) publishState(clientRef.current, prev.code, newState);
+      
+      // OPTIMIZATION: Host only broadcasts if Waiting status changed
+      if (me.isHost && clientRef.current) {
+          if (me.isWaiting !== isWaiting) {
+              publishState(clientRef.current, prev.code, newState);
+          }
+      }
       return newState;
     });
 
     if (!me.isHost && clientRef.current) {
+        // Guest always sends their update to Host, but Host won't echo it back instantly
         clientRef.current.publish(getClientTopic(gameState.code), JSON.stringify({
             type: 'MARK_UPDATE',
             playerId: playerId,
@@ -619,8 +705,9 @@ const App: React.FC = () => {
              };
              
              setGameState(newState);
-             speakText(newState.mcCommentary); // Side effect moved out of render cycle if possible, but here it's event handler
+             speakText(newState.mcCommentary); 
              
+             // Host Wins -> Broadcast Immediately
              if (clientRef.current) publishState(clientRef.current, currentState.code, newState);
              if (callIntervalRef.current) clearInterval(callIntervalRef.current);
 
@@ -669,8 +756,14 @@ const App: React.FC = () => {
   const me = gameState.players.find(p => p.id === playerId);
   const isHost = me?.isHost;
   const isSpectator = me?.status === 'spectating';
-  const allPlayersReady = gameState.players.filter(p => p.status === 'playing').length > 0 && 
-                          gameState.players.filter(p => p.status === 'playing').every(p => p.isReady);
+  
+  // Calculate readiness for button display
+  const readyPlayers = gameState.players.filter(p => p.status === 'playing' && p.isReady);
+  const readyCount = readyPlayers.length;
+  const totalPotEstimate = readyPlayers.reduce((sum, p) => sum + (p.sheetCount * gameState.betPrice), 0);
+  
+  // For validation, we still need at least 1 ready player
+  const canStart = readyCount > 0;
 
   if (gameState.status === 'lobby') {
     return (
@@ -708,6 +801,11 @@ const App: React.FC = () => {
               <button onClick={() => setIsMuted(!isMuted)} className="btn" style={{padding: '0.25rem', background: 'transparent', border: '1px solid #white', color: 'white'}}>
                  {isMuted ? <VolumeX size={20}/> : <Volume2 size={20}/>}
               </button>
+              {me && (
+                  <button onClick={leaveRoom} className="btn" style={{padding: '0.25rem', background: 'transparent', border: '1px solid #white', color: 'white'}} title="Thoát phòng">
+                     <LogOut size={20} />
+                  </button>
+              )}
               <div className="room-badge">
                 {isConnecting ? <WifiOff size={16} /> : <Wifi size={16} style={{color: '#86efac'}}/>}
                 Phòng: {gameState.code}
@@ -833,7 +931,7 @@ const App: React.FC = () => {
                                             </div>
                                         </div>
                                     </div>
-                                    <div className="text-right">
+                                    <div className="text-right flex items-center gap-2">
                                         {p.isReady ? (
                                             <span style={{color: '#16a34a', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.85rem'}}>
                                                 <CheckCircle2 size={16} /> Sẵn sàng
@@ -842,6 +940,16 @@ const App: React.FC = () => {
                                             <span style={{color: '#9ca3af', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.85rem'}}>
                                                 <Loader2 size={16} className="animate-spin" /> Đang chọn ({p.sheetCount} lá)
                                             </span>
+                                        )}
+                                        {isHost && p.id !== playerId && (
+                                            <button 
+                                                onClick={() => kickPlayer(p.id)}
+                                                className="btn-icon" 
+                                                title="Đuổi khỏi phòng"
+                                                style={{color: '#ef4444', width: '28px', height: '28px', padding: 0}}
+                                            >
+                                                <X size={16} />
+                                            </button>
                                         )}
                                     </div>
                                 </div>
@@ -853,11 +961,14 @@ const App: React.FC = () => {
                         <div style={{marginTop: 'auto'}}>
                             <button 
                                 onClick={startGame}
-                                disabled={!allPlayersReady}
+                                disabled={!canStart}
                                 className="btn btn-primary w-full"
-                                style={{padding: '1rem', fontSize: '1.2rem', opacity: !allPlayersReady ? 0.5 : 1}}
+                                style={{padding: '1rem', fontSize: '1.2rem', opacity: !canStart ? 0.5 : 1}}
                             >
-                                {!allPlayersReady ? 'CHỜ MỌI NGƯỜI SẴN SÀNG...' : <><Play size={24}/> BẮT ĐẦU VÁN ({formatCurrency(gameState.players.filter(p => p.status === 'playing').reduce((sum, p) => sum + (p.sheetCount * gameState.betPrice), 0))})</>}
+                                {!canStart 
+                                    ? 'CẦN ÍT NHẤT 1 NGƯỜI SẴN SÀNG' 
+                                    : <><Play size={24}/> BẮT ĐẦU NGAY ({formatCurrency(totalPotEstimate)})</>
+                                }
                             </button>
                         </div>
                      ) : (

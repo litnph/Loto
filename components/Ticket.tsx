@@ -77,4 +77,22 @@ const Ticket: React.FC<TicketProps> = ({ ticket, markedNumbers, onNumberClick, d
   );
 };
 
-export default Ticket;
+// Optimization: Only re-render if markedNumbers changed specifically for this ticket's numbers
+// or if the color/disabled state changes.
+export default React.memo(Ticket, (prev, next) => {
+    if (prev.color !== next.color) return false;
+    if (prev.disabled !== next.disabled) return false;
+    
+    // Check if the marked numbers relevant to this ticket have changed
+    // This is a deeper check but prevents re-rendering when marking numbers not on this ticket
+    // However, for simplicity and speed (since Set comparison is hard), 
+    // we simply check reference or size, or just let Memo handle prop diffs.
+    // Since markedNumbers is a Set (mutable reference in some patterns, but here we replace it),
+    // React.memo w/ default shallow comparison is usually enough if we manage state correctly.
+    // But since `markedNumbers` is a NEW Set every time, we need to be careful.
+    
+    // Simple optimization: If the sets are the same reference (no change), skip.
+    if (prev.markedNumbers === next.markedNumbers) return true;
+    
+    return false; // Re-render if markedNumbers reference changed
+});

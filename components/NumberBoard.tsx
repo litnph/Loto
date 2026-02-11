@@ -35,4 +35,4 @@ const NumberBoard: React.FC<NumberBoardProps> = ({ calledNumbers, currentNumber 
   );
 };
 
-export default NumberBoard;
+export default React.memo(NumberBoard);
