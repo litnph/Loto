@@ -5,7 +5,7 @@ import Lobby from './components/Lobby';
 import Ticket from './components/Ticket';
 import NumberBoard from './components/NumberBoard';
 import { generateMCCommentary } from './services/geminiService';
-import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle } from 'lucide-react';
+import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX } from 'lucide-react';
 import mqtt from 'mqtt';
 
 // Sử dụng Public Broker có hỗ trợ WebSockets Secure (WSS)
@@ -28,6 +28,7 @@ const App: React.FC = () => {
   const [mcLoading, setMcLoading] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectionError, setConnectionError] = useState('');
+  const [isMuted, setIsMuted] = useState(false); // State for audio toggle
   
   const clientRef = useRef<mqtt.MqttClient | null>(null);
   const callIntervalRef = useRef<any>(null);
@@ -42,8 +43,29 @@ const App: React.FC = () => {
           clientRef.current.end();
       }
       if (callIntervalRef.current) clearInterval(callIntervalRef.current);
+      window.speechSynthesis.cancel(); // Cancel speech on unmount
     };
   }, []);
+
+  // --- Audio / TTS Helper ---
+  const speakText = useCallback((text: string) => {
+    if (isMuted || !window.speechSynthesis) return;
+
+    // Cancel previous utterance to avoid queue buildup
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'vi-VN'; // Vietnamese voice
+    utterance.rate = 1.0; 
+    utterance.pitch = 1.1;
+    
+    // Fallback logic to ensure voice works reasonably well
+    const voices = window.speechSynthesis.getVoices();
+    const viVoice = voices.find(v => v.lang.includes('vi'));
+    if (viVoice) utterance.voice = viVoice;
+
+    window.speechSynthesis.speak(utterance);
+  }, [isMuted]);
 
   // --- MQTT Helpers ---
   
@@ -285,10 +307,11 @@ const App: React.FC = () => {
             status: 'playing',
             mcCommentary: 'Trò chơi bắt đầu! Chuẩn bị dò số nào...',
         };
+        speakText("Trò chơi bắt đầu!");
         if (clientRef.current) publishState(clientRef.current, prev.code, newState);
         return newState;
     });
-  }, []);
+  }, [speakText]);
 
   const drawNumber = useCallback(async () => {
     const currentState = gameStateRef.current;
@@ -323,15 +346,16 @@ const App: React.FC = () => {
     };
   }, [gameState.status, gameState.winner, gameState.players, playerId, drawNumber]);
 
-  // MC Commentary Effect
+  // MC Commentary Effect & TTS
   useEffect(() => {
     const me = gameState.players.find(p => p.id === playerId);
+    
+    // Only fetch commentary if Host
     if (me?.isHost && gameState.currentNumber && gameState.status === 'playing') {
       const fetchCommentary = async () => {
         setMcLoading(true);
         const text = await generateMCCommentary(gameState.currentNumber!);
         
-        // Use functional update but check ref to ensure we don't overwrite newer state
         const currentState = gameStateRef.current;
         if(currentState.currentNumber !== gameState.currentNumber) return; // Stale
 
@@ -344,6 +368,15 @@ const App: React.FC = () => {
       fetchCommentary();
     }
   }, [gameState.currentNumber, gameState.status, playerId]);
+
+  // TTS Effect - Triggers whenever commentary updates and we have a current number
+  useEffect(() => {
+    if (gameState.status === 'playing' && gameState.mcCommentary) {
+        speakText(gameState.mcCommentary);
+    } else if (gameState.status === 'ended' && gameState.winner) {
+        speakText(gameState.mcCommentary); // Speak winner announcement
+    }
+  }, [gameState.mcCommentary, gameState.status, gameState.winner, speakText]);
 
 
   // --- User Interaction ---
@@ -467,9 +500,14 @@ const App: React.FC = () => {
             <Trophy size={24} style={{color: '#fcd34d'}} />
             <span>Loto Vui Online</span>
           </div>
-          <div className="room-badge">
-            {isConnecting ? <WifiOff size={16} /> : <Wifi size={16} style={{color: '#86efac'}}/>}
-            Phòng: {gameState.code}
+          <div className="flex items-center gap-4">
+              <button onClick={() => setIsMuted(!isMuted)} className="btn" style={{padding: '0.25rem', background: 'transparent', border: '1px solid #white', color: 'white'}}>
+                 {isMuted ? <VolumeX size={20}/> : <Volume2 size={20}/>}
+              </button>
+              <div className="room-badge">
+                {isConnecting ? <WifiOff size={16} /> : <Wifi size={16} style={{color: '#86efac'}}/>}
+                Phòng: {gameState.code}
+              </div>
           </div>
         </div>
       </header>
@@ -515,37 +553,12 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Play Area */}
+        {/* Play Area - NEW LAYOUT */}
         {(gameState.status === 'playing' || gameState.status === 'ended') && (
-          <div style={{display: 'flex', flexDirection: 'column', gap: '1.5rem'}}>
+          <div className="grid-layout">
             
-            {/* MC Section */}
-            <div className="mc-section">
-              <div className="mc-title">
-                 <Volume2 size={20} />
-                 <span>MC Gemini</span>
-              </div>
-              
-              <div style={{minHeight: '80px', display: 'flex', alignItems: 'center', justifyContent: 'center'}}>
-                 {mcLoading ? (
-                    <span style={{color: '#9ca3af', display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
-                        <Loader2 className="animate-spin" size={16} /> Đang nghĩ câu vè...
-                    </span>
-                 ) : (
-                    <p className="mc-text">"{gameState.mcCommentary}"</p>
-                 )}
-              </div>
-
-              {gameState.currentNumber && (
-                <div className="current-number">
-                    {gameState.currentNumber}
-                </div>
-              )}
-            </div>
-
-            <div className="grid-layout">
-              {/* Ticket Area */}
-              <div style={{display: 'flex', flexDirection: 'column', gap: '1rem'}}>
+            {/* LEFT COLUMN: Ticket & Bingo Button */}
+            <div style={{display: 'flex', flexDirection: 'column', gap: '1.5rem'}}>
                   <div>
                     <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem'}}>
                         <UserCircle2 size={24} style={{color: '#dc2626'}} /> 
@@ -571,21 +584,47 @@ const App: React.FC = () => {
                         </button>
                     )}
                   </div>
-              </div>
+            </div>
 
-              {/* Sidebar */}
-              <div style={{display: 'flex', flexDirection: 'column', gap: '1.5rem'}}>
-                 <NumberBoard calledNumbers={gameState.calledNumbers} currentNumber={gameState.currentNumber} />
+            {/* RIGHT COLUMN: MC, Board, Players */}
+            <div style={{display: 'flex', flexDirection: 'column', gap: '1.5rem'}}>
+                {/* MC Section */}
+                <div className="mc-section" style={{marginBottom: 0}}>
+                    <div className="mc-title">
+                        <Volume2 size={20} />
+                        <span>MC Gemini</span>
+                    </div>
+                    
+                    <div style={{minHeight: '60px', display: 'flex', alignItems: 'center', justifyContent: 'center'}}>
+                        {mcLoading ? (
+                            <span style={{color: '#9ca3af', display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
+                                <Loader2 className="animate-spin" size={16} /> ...
+                            </span>
+                        ) : (
+                            <p className="mc-text" style={{fontSize: '1.1rem'}}>"{gameState.mcCommentary}"</p>
+                        )}
+                    </div>
 
-                 <div className="card" style={{padding: '1rem'}}>
+                    {gameState.currentNumber && (
+                        <div className="current-number" style={{width: '5rem', height: '5rem', fontSize: '2.5rem', marginTop: '0.5rem'}}>
+                            {gameState.currentNumber}
+                        </div>
+                    )}
+                </div>
+
+                {/* Number Board */}
+                <NumberBoard calledNumbers={gameState.calledNumbers} currentNumber={gameState.currentNumber} />
+
+                {/* Player List */}
+                <div className="card" style={{padding: '1rem'}}>
                     <h3 className="font-bold" style={{marginBottom: '0.75rem', display: 'flex', alignItems: 'center'}}>
                         <Users size={20} style={{marginRight: '0.5rem', color: '#3b82f6'}} />
                         Người Chơi ({gameState.players.length})
                     </h3>
                     <div className="player-list custom-scrollbar">
                         {gameState.players.map(p => {
-                             const markedCount = p.markedNumbers.size;
-                             return (
+                                const markedCount = p.markedNumbers.size;
+                                return (
                                 <div key={p.id} className={`player-item ${p.id === playerId ? 'is-me' : ''}`}>
                                     <div style={{display: 'flex', alignItems: 'center', gap: '0.75rem'}}>
                                         <div className="avatar">
@@ -602,12 +641,10 @@ const App: React.FC = () => {
                                         {markedCount} số
                                     </div>
                                 </div>
-                             )
+                                )
                         })}
                     </div>
-                 </div>
-              </div>
-
+                </div>
             </div>
             
             {/* Winner Modal */}
