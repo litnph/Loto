@@ -6,10 +6,15 @@ import Ticket from './components/Ticket';
 import NumberBoard from './components/NumberBoard';
 import ChatBox from './components/ChatBox';
 import { generateMCCommentary } from './services/geminiService';
-import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, Palette, Shuffle, X, Settings2, Flame, Coins, Plus, Eye, Trash2, Mic, LogOut, Pencil, Save } from 'lucide-react';
+import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, Palette, Shuffle, X, Settings2, Flame, Coins, Plus, Eye, Trash2, Mic, LogOut, Pencil, Save, MessageSquareOff } from 'lucide-react';
 import mqtt from 'mqtt';
 
-const BROKER_URL = 'wss://broker.emqx.io:8084/mqtt'; 
+// --- DUAL BROKER CONFIGURATION ---
+// 1. Game Core Broker (Stability is priority)
+const GAME_BROKER_URL = 'wss://broker.hivemq.com:8000/mqtt'; 
+// 2. Chat Broker (High volume/burst tolerance)
+const CHAT_BROKER_URL = 'wss://broker.emqx.io:8084/mqtt';
+
 const TOPIC_PREFIX = 'loto-vui-v3';
 
 const INITIAL_STATE: RoomState = {
@@ -30,8 +35,12 @@ const App: React.FC = () => {
 
   const [playerId, setPlayerId] = useState<string>('');
   const [mcLoading, setMcLoading] = useState(false);
-  const [isConnecting, setIsConnecting] = useState(false);
+  
+  // Connection States
+  const [isGameConnecting, setIsGameConnecting] = useState(false);
+  const [isChatConnected, setIsChatConnected] = useState(false);
   const [connectionError, setConnectionError] = useState('');
+  
   const [isMuted, setIsMuted] = useState(false);
   
   // Chat States
@@ -41,7 +50,6 @@ const App: React.FC = () => {
 
   // UI States
   const [activeSheetIndexForColor, setActiveSheetIndexForColor] = useState<number | null>(null);
-  // Rename state kept for logic safety but UI hidden
   const [isRenameModalOpen, setIsRenameModalOpen] = useState(false);
   const [renameValue, setRenameValue] = useState('');
 
@@ -49,23 +57,26 @@ const App: React.FC = () => {
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [selectedVoiceURI, setSelectedVoiceURI] = useState<string>('');
   
-  const clientRef = useRef<mqtt.MqttClient | null>(null);
+  // --- DUAL CLIENT REFS ---
+  const gameClientRef = useRef<mqtt.MqttClient | null>(null);
+  const chatClientRef = useRef<mqtt.MqttClient | null>(null);
+
   const callIntervalRef = useRef<any>(null);
   const gameStateRef = useRef(gameState);
   
-  // Refs for stable access inside callbacks to prevent stale closures/race conditions
+  // Refs for stable access inside callbacks
   const playerIdRef = useRef(playerId);
-  const isConnectingRef = useRef(isConnecting);
+  const isGameConnectingRef = useRef(isGameConnecting);
   
-  // CRITICAL FIX: Local Source of Truth for marked numbers to prevent race conditions on fast clicks
+  // Local Source of Truth for marked numbers
   const localMarkedNumbersRef = useRef<Set<number>>(new Set());
 
-  // Ref for chat open status to use inside callbacks
   const isChatOpenRef = useRef(isChatOpen);
+  const lastChatTimeRef = useRef<number>(0);
 
   useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
   useEffect(() => { playerIdRef.current = playerId; }, [playerId]);
-  useEffect(() => { isConnectingRef.current = isConnecting; }, [isConnecting]);
+  useEffect(() => { isGameConnectingRef.current = isGameConnecting; }, [isGameConnecting]);
   useEffect(() => { isChatOpenRef.current = isChatOpen; }, [isChatOpen]);
 
   // Reset unread count when chat opens
@@ -75,7 +86,7 @@ const App: React.FC = () => {
     }
   }, [isChatOpen]);
 
-  // Reset local marks ref when starting new game or changing player
+  // Reset local marks ref when starting new game
   useEffect(() => {
      if (gameState.status === 'waiting') {
          localMarkedNumbersRef.current.clear();
@@ -88,7 +99,8 @@ const App: React.FC = () => {
 
   useEffect(() => {
     return () => {
-      if (clientRef.current) clientRef.current.end();
+      if (gameClientRef.current) gameClientRef.current.end();
+      if (chatClientRef.current) chatClientRef.current.end();
       if (callIntervalRef.current) clearInterval(callIntervalRef.current);
       window.speechSynthesis.cancel();
     };
@@ -98,23 +110,14 @@ const App: React.FC = () => {
   useEffect(() => {
     const loadVoices = () => {
       const vs = window.speechSynthesis.getVoices();
-      
       if (vs.length > 0) {
         setVoices(vs);
-        
-        // Debugging logs based on user request
-        const vnVoices = vs.filter(v => v.lang === "vi-VN");
-        console.log("Vietnamese voices:", vnVoices);
-
         if (!selectedVoiceURI) {
-            // Priority: Google Tiếng Việt (Chrome) -> Microsoft HoaiMy (Edge) -> Generic vi-VN -> Any 'vi'
             const viVoice = vs.find(v => v.name === 'Google Tiếng Việt') || 
                             vs.find(v => v.name.includes('HoaiMy')) || 
                             vs.find(v => v.lang === 'vi-VN') || 
                             vs.find(v => v.lang.includes('vi'));
-            
             if (viVoice) {
-                console.log("Auto-selected voice:", viVoice.name);
                 setSelectedVoiceURI(viVoice.voiceURI);
             } else if (vs.length > 0) {
                 setSelectedVoiceURI(vs[0].voiceURI);
@@ -122,33 +125,23 @@ const App: React.FC = () => {
         }
       }
     };
-    
-    // Chrome/Edge loads voices asynchronously
     window.speechSynthesis.onvoiceschanged = loadVoices;
     loadVoices();
-    
     return () => { window.speechSynthesis.onvoiceschanged = null; };
   }, [selectedVoiceURI]);
 
   const speakText = useCallback((text: string) => {
     if (isMuted || !window.speechSynthesis) return;
-    
-    // Optimization: Don't interrupt if it's the exact same text (reduces choppy audio)
-    if (window.speechSynthesis.speaking) {
-         window.speechSynthesis.cancel();
-    }
+    if (window.speechSynthesis.speaking) window.speechSynthesis.cancel();
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = 'vi-VN'; 
-    
     const activeVoice = voices.find(v => v.voiceURI === selectedVoiceURI);
-    if (activeVoice) {
-        utterance.voice = activeVoice;
-    } else {
+    if (activeVoice) utterance.voice = activeVoice;
+    else {
         const viVoice = voices.find(v => v.lang.includes('vi'));
         if (viVoice) utterance.voice = viVoice;
     }
-    
     utterance.rate = 0.9; 
     utterance.pitch = 1.0;
     window.speechSynthesis.speak(utterance);
@@ -163,35 +156,34 @@ const App: React.FC = () => {
   const getClientTopic = (code: string) => `${TOPIC_PREFIX}/${code}/client`;
   const getChatTopic = (code: string) => `${TOPIC_PREFIX}/${code}/chat`;
 
-  const setupMqttClient = useCallback((clientId: string, onConnect: () => void) => {
+  // Generic Setup Function
+  const setupMqttClient = useCallback((brokerUrl: string, clientId: string, onConnect?: () => void, onError?: () => void) => {
     try {
-        const client = mqtt.connect(BROKER_URL, {
+        const client = mqtt.connect(brokerUrl, {
             clientId,
-            keepalive: 60,
+            keepalive: 30,
             clean: true,
-            reconnectPeriod: 1000,
+            reconnectPeriod: 2000,
             connectTimeout: 30 * 1000,
-            // Optimization: Skip some validation for speed if broker allows
             reschedulePings: true,
             protocolId: 'MQTT',
             protocolVersion: 4,
+            path: '/mqtt'
         });
 
         client.on('connect', () => {
-            console.log('MQTT Connected');
-            // Do NOT setIsConnecting(false) here yet for guests, wait for first valid state
-            onConnect();
+            console.log(`Connected to ${brokerUrl}`);
+            if (onConnect) onConnect();
         });
 
         client.on('error', (err) => {
-            console.error('MQTT Error:', err);
-            setIsConnecting(false);
-            setConnectionError('Lỗi kết nối máy chủ tin nhắn. Vui lòng thử lại.');
+            console.error(`Error on ${brokerUrl}:`, err);
+            if (onError) onError();
         });
+        
         return client;
     } catch (err) {
         console.error("MQTT Setup Error", err);
-        setConnectionError("Không thể khởi tạo kết nối mạng.");
         return null;
     }
   }, []);
@@ -199,19 +191,25 @@ const App: React.FC = () => {
   // --- Game Actions ---
 
   const createRoom = async (playerName: string) => {
-    setIsConnecting(true);
-    isConnectingRef.current = true; // Sync ref immediately
+    setIsGameConnecting(true);
+    isGameConnectingRef.current = true;
     setConnectionError('');
-    if (clientRef.current) clientRef.current.end();
+    
+    // Cleanup previous sessions
+    if (gameClientRef.current) gameClientRef.current.end();
+    if (chatClientRef.current) chatClientRef.current.end();
 
     const shortCode = Math.random().toString(36).substring(2, 7).toUpperCase();
     const myId = `host-${Date.now()}`;
+    const chatId = `chat-host-${Date.now()}`; // Separate ID for chat
     
     setPlayerId(myId);
-    playerIdRef.current = myId; // Sync ref immediately
+    playerIdRef.current = myId;
 
-    const client = setupMqttClient(myId, () => {
-        setIsConnecting(false); // Host connects immediately
+    // 1. Setup Game Client
+    const gameClient = setupMqttClient(GAME_BROKER_URL, myId, () => {
+        setIsGameConnecting(false);
+        
         const mySheet = generateTicket(TICKET_COLORS[0]);
         const hostPlayer: Player = {
             id: myId,
@@ -242,49 +240,72 @@ const App: React.FC = () => {
         };
 
         setGameState(initialState);
-        setChatMessages([]); // Reset chat
-        client.subscribe([getClientTopic(shortCode), getChatTopic(shortCode)], (err) => {
-            if (!err) publishState(client, shortCode, initialState);
+        setChatMessages([]); 
+
+        // Game Subscription
+        gameClient.subscribe(getClientTopic(shortCode), (err) => {
+            if (!err) publishState(gameClient, shortCode, initialState);
         });
+    }, () => {
+        setConnectionError('Không thể kết nối máy chủ Game (HiveMQ).');
+        setIsGameConnecting(false);
     });
 
-    if (client) {
-        client.on('message', (topic, message) => {
+    // 2. Setup Chat Client (Independent)
+    const chatClient = setupMqttClient(CHAT_BROKER_URL, chatId, () => {
+        setIsChatConnected(true);
+        chatClient.subscribe(getChatTopic(shortCode));
+    }, () => {
+        setIsChatConnected(false);
+        console.warn("Chat server connection failed");
+    });
+
+    if (gameClient) {
+        gameClient.on('message', (topic, message) => {
+             // Host only handles Client Updates on Game Client
+             handleHostMessage(topic, message);
+        });
+        gameClientRef.current = gameClient;
+    }
+
+    if (chatClient) {
+        chatClient.on('message', (topic, message) => {
             if (topic === getChatTopic(shortCode)) {
                 handleChatMessage(message);
-            } else {
-                handleHostMessage(topic, message);
             }
         });
-        clientRef.current = client;
+        chatClientRef.current = chatClient;
     }
   };
 
   const joinRoom = (playerName: string, roomCodeInput: string) => {
     const roomCode = roomCodeInput.trim().toUpperCase();
     
-    setIsConnecting(true);
-    isConnectingRef.current = true; // Sync ref immediately
+    setIsGameConnecting(true);
+    isGameConnectingRef.current = true;
     setConnectionError('');
-    if (clientRef.current) clientRef.current.end();
+    if (gameClientRef.current) gameClientRef.current.end();
+    if (chatClientRef.current) chatClientRef.current.end();
 
     const myId = `player-${Date.now()}`;
+    const chatId = `chat-player-${Date.now()}`;
     setPlayerId(myId);
-    playerIdRef.current = myId; // Sync ref immediately
+    playerIdRef.current = myId;
 
     const joinTimeout = setTimeout(() => {
-        if (isConnectingRef.current) {
+        if (isGameConnectingRef.current) {
             setConnectionError("Không tìm thấy phòng hoặc mạng chậm. Hãy kiểm tra lại mã phòng.");
-            setIsConnecting(false);
-            if (clientRef.current) clientRef.current.end();
+            setIsGameConnecting(false);
+            if (gameClientRef.current) gameClientRef.current.end();
         }
-    }, 10000);
+    }, 15000);
 
-    const client = setupMqttClient(myId, () => {
-        // Optimistically set code to ensure chat topic generation works locally immediately
+    // 1. Setup Game Client
+    const gameClient = setupMqttClient(GAME_BROKER_URL, myId, () => {
+        // Optimistically set code
         setGameState(prev => ({ ...prev, code: roomCode }));
 
-        client.subscribe([getHostTopic(roomCode), getChatTopic(roomCode)], (err) => {
+        gameClient.subscribe(getHostTopic(roomCode), (err) => {
             if (!err) {
                  const randomColor = TICKET_COLORS[Math.floor(Math.random() * TICKET_COLORS.length)];
                  const mySheet = generateTicket(randomColor);
@@ -302,48 +323,67 @@ const App: React.FC = () => {
                          isWaiting: false,
                          balance: 0,
                          sheetCount: 1,
-                         status: 'playing', // Will be corrected by host if game is running
+                         status: 'playing',
                      }
                  };
-                 client.publish(getClientTopic(roomCode), JSON.stringify(joinPayload));
+                 gameClient.publish(getClientTopic(roomCode), JSON.stringify(joinPayload));
             }
         });
+    }, () => {
+        // Error on Game Client
     });
 
-    if (client) {
-        client.on('message', (topic, message) => {
-            // IMPORTANT: clearTimeout on FIRST message (either state or chat)
+    // 2. Setup Chat Client
+    const chatClient = setupMqttClient(CHAT_BROKER_URL, chatId, () => {
+         setIsChatConnected(true);
+         chatClient.subscribe(getChatTopic(roomCode));
+    }, () => {
+         setIsChatConnected(false);
+    });
+
+    if (gameClient) {
+        gameClient.on('message', (topic, message) => {
             clearTimeout(joinTimeout);
-            
-            // Check strictly both Chat Topic and Host Topic
-            if (topic === getChatTopic(roomCode)) {
-                handleChatMessage(message);
-            } else if (topic === getHostTopic(roomCode)) {
+            if (topic === getHostTopic(roomCode)) {
                 handleGuestMessage(topic, message);
             }
         });
-        clientRef.current = client;
+        gameClientRef.current = gameClient;
+    }
+
+    if (chatClient) {
+        chatClient.on('message', (topic, message) => {
+            if (topic === getChatTopic(roomCode)) {
+                handleChatMessage(message);
+            }
+        });
+        chatClientRef.current = chatClient;
     }
   };
 
   const leaveRoom = () => {
       const me = gameState.players.find(p => p.id === playerId);
-      if (clientRef.current) {
+      if (gameClientRef.current) {
           if (!me?.isHost) {
-               // Send leave message to host
-               clientRef.current.publish(getClientTopic(gameState.code), JSON.stringify({
+               // Send leave message to host via Game Client
+               gameClientRef.current.publish(getClientTopic(gameState.code), JSON.stringify({
                   type: 'PLAYER_LEAVE',
                   playerId: playerId
                }));
           }
-          clientRef.current.end();
+          gameClientRef.current.end();
+      }
+      
+      if (chatClientRef.current) {
+          chatClientRef.current.end();
       }
       
       // Reset state
       setGameState(INITIAL_STATE);
       setChatMessages([]);
       setPlayerId('');
-      setIsConnecting(false);
+      setIsGameConnecting(false);
+      setIsChatConnected(false);
       setUnreadChatCount(0);
       setIsChatOpen(false);
   };
@@ -352,13 +392,12 @@ const App: React.FC = () => {
       const me = gameState.players.find(p => p.id === playerId);
       if (!me?.isHost) return;
 
-      // Host deletes player locally then broadcasts
       const newState = {
           ...gameState,
           players: gameState.players.filter(p => p.id !== targetPlayerId)
       };
       setGameState(newState);
-      if (clientRef.current) publishState(clientRef.current, gameState.code, newState);
+      if (gameClientRef.current) publishState(gameClientRef.current, gameState.code, newState);
   };
 
   // --- Logic for Ready / Customize ---
@@ -391,23 +430,19 @@ const App: React.FC = () => {
       const myId = playerIdRef.current;
       const currentRefState = gameStateRef.current;
 
-      // Update Local
       setGameState(prev => {
           const updatedPlayers = prev.players.map(p => p.id === pId ? { ...p, ...changes } : p);
           const newState = { ...prev, players: updatedPlayers };
-          // If I am host, broadcast state using LATEST ref data
           const me = prev.players.find(p => p.id === myId);
-          if (me?.isHost && clientRef.current) {
-              publishState(clientRef.current, prev.code, newState);
+          if (me?.isHost && gameClientRef.current) {
+              publishState(gameClientRef.current, prev.code, newState);
           }
           return newState;
       });
 
-      // If I am guest, send update request using LATEST ref data
-      // We use currentRefState instead of gameState closure to avoid staleness
       const me = currentRefState.players.find(p => p.id === myId);
-      if (me && !me.isHost && clientRef.current) {
-           clientRef.current.publish(getClientTopic(currentRefState.code), JSON.stringify({
+      if (me && !me.isHost && gameClientRef.current) {
+           gameClientRef.current.publish(getClientTopic(currentRefState.code), JSON.stringify({
               type: 'PLAYER_UPDATE',
               playerId: pId,
               changes: changes
@@ -420,11 +455,10 @@ const App: React.FC = () => {
       if (!me || me.isReady) return;
 
       const newSheets = [...me.sheets];
-      // Generate new ticket but keep the same color
       newSheets[index] = generateTicket(newSheets[index].color);
       
       updatePlayerLocallyAndBroadcast(playerId, { sheets: newSheets, markedNumbers: new Set() });
-      localMarkedNumbersRef.current.clear(); // Clear local marks if sheets change
+      localMarkedNumbersRef.current.clear(); 
   };
 
   const handleSheetColorChange = (index: number, color: string) => {
@@ -434,7 +468,6 @@ const App: React.FC = () => {
       const newSheets = [...me.sheets];
       newSheets[index] = { ...newSheets[index], color: color };
       
-      // Also update player main color if it's the first sheet
       const extraChanges: Partial<Player> = { sheets: newSheets };
       if (index === 0) {
           extraChanges.color = color;
@@ -446,9 +479,8 @@ const App: React.FC = () => {
 
   const handleAddSheet = () => {
       const me = gameState.players.find(p => p.id === playerId);
-      if (!me || me.isReady || me.sheets.length >= 6) return; // Limit 6
+      if (!me || me.isReady || me.sheets.length >= 6) return; 
 
-      // Inherit color from the last sheet or random
       const lastColor = me.sheets.length > 0 ? me.sheets[me.sheets.length - 1].color : TICKET_COLORS[0];
       const newSheet = generateTicket(lastColor);
       const newSheets = [...me.sheets, newSheet];
@@ -481,13 +513,14 @@ const App: React.FC = () => {
 
       setGameState(prev => {
           const newState = { ...prev, betPrice: newPrice };
-          if(clientRef.current) publishState(clientRef.current, prev.code, newState);
+          if(gameClientRef.current) publishState(gameClientRef.current, prev.code, newState);
           return newState;
       });
   };
 
   // --- MQTT Messaging Logic ---
 
+  // Uses Game Client (HiveMQ)
   const publishState = (client: mqtt.MqttClient, code: string, state: RoomState) => {
       const payload = JSON.stringify({
           ...state,
@@ -496,7 +529,7 @@ const App: React.FC = () => {
               markedNumbers: Array.from(p.markedNumbers)
           }))
       });
-      client.publish(getHostTopic(code), payload, { retain: true, qos: 0 }); // Use QoS 0 for speed
+      client.publish(getHostTopic(code), payload, { retain: true, qos: 0 });
   };
 
   const handleChatMessage = (message: any) => {
@@ -517,12 +550,11 @@ const App: React.FC = () => {
           const data = JSON.parse(message.toString());
           const currentState = gameStateRef.current;
           let newState = { ...currentState };
-          let shouldBroadcast = false; // Separate broadcast flag from local update
+          let shouldBroadcast = false; 
           let shouldUpdateLocal = false;
 
           if (data.type === 'JOIN_REQUEST') {
               if (!currentState.players.some(p => p.id === data.player.id)) {
-                  // If game is playing, set new player as spectator
                   const isLate = currentState.status === 'playing';
                   const newPlayer: Player = {
                       ...data.player,
@@ -532,9 +564,9 @@ const App: React.FC = () => {
                   };
                   newState.players = [...currentState.players, newPlayer];
                   shouldUpdateLocal = true;
-                  shouldBroadcast = true; // Always broadcast join
+                  shouldBroadcast = true;
                   
-                  // Send system chat message
+                  // Use Chat Client for Join messages
                   sendChatMessage(`đã tham gia phòng`, true, newPlayer.name);
               }
           } 
@@ -546,12 +578,11 @@ const App: React.FC = () => {
               if (pName) sendChatMessage(`đã rời phòng`, true, pName);
           }
           else if (data.type === 'MARK_UPDATE') {
-              // OPTIMIZATION: Only broadcast if Waiting status CHANGED
               newState.players = currentState.players.map(p => {
                   if (p.id === data.playerId) {
                       const wasWaiting = p.isWaiting;
                       if (wasWaiting !== data.isWaiting) {
-                          shouldBroadcast = true; // Waiting status changed, tell everyone
+                          shouldBroadcast = true; 
                       }
                       return { 
                           ...p, 
@@ -566,14 +597,13 @@ const App: React.FC = () => {
           else if (data.type === 'PLAYER_UPDATE') {
               newState.players = currentState.players.map(p => {
                   if (p.id === data.playerId) {
-                      // Prevent changing sheet count if already ready (double check)
                       if (data.changes.sheetCount && p.isReady) return p;
                       return { ...p, ...data.changes };
                   }
                   return p;
               });
               shouldUpdateLocal = true;
-              shouldBroadcast = true; // Player config change usually happens in lobby, keep synced
+              shouldBroadcast = true;
           }
           else if (data.type === 'BINGO_CLAIM') {
               const player = currentState.players.find(p => p.id === data.playerId);
@@ -586,15 +616,14 @@ const App: React.FC = () => {
                       newState.winningNumbers = winningRow;
                       newState.mcCommentary = `CHÚC MỪNG! ${player.name} ĐÃ KINH RỒI!`;
                       
-                      // Award Pot
                       newState.players = newState.players.map(p => 
                           p.id === player.id ? { ...p, balance: p.balance + newState.pot } : p
                       );
-                      newState.pot = 0; // Reset pot display (or keep it to show what was won)
+                      newState.pot = 0; 
 
                       if (callIntervalRef.current) clearInterval(callIntervalRef.current);
                       shouldUpdateLocal = true;
-                      shouldBroadcast = true; // WIN is critical
+                      shouldBroadcast = true;
                   }
               }
           }
@@ -603,8 +632,8 @@ const App: React.FC = () => {
               setGameState(newState);
           }
           
-          if (shouldBroadcast && clientRef.current) {
-              publishState(clientRef.current, currentState.code, newState);
+          if (shouldBroadcast && gameClientRef.current) {
+              publishState(gameClientRef.current, currentState.code, newState);
           }
 
       } catch (e) {
@@ -617,14 +646,10 @@ const App: React.FC = () => {
           const remoteState = JSON.parse(message.toString());
           const myId = playerIdRef.current;
           
-          // CRITICAL FIX: Conflict resolution.
-          // If the player in the incoming state is ME, and I am already efficiently playing (not connecting),
-          // I trust my `localMarkedNumbersRef` MORE than the server's outdated state.
-          // This prevents the server from wiping out my recent clicks.
           const hydratedPlayers: Player[] = remoteState.players.map((p: any) => {
               const serverMarks = new Set<number>(p.markedNumbers as number[]);
               
-              if (p.id === myId && !isConnectingRef.current) {
+              if (p.id === myId && !isGameConnectingRef.current) {
                   return {
                       ...p,
                       markedNumbers: new Set(localMarkedNumbersRef.current) // Keep local state
@@ -639,24 +664,17 @@ const App: React.FC = () => {
 
           const amInList = hydratedPlayers.find(p => p.id === myId);
 
-          // FIX RACE CONDITION & "RELOAD" ISSUE:
-          // Previously, if a player was temporarily missing from the host's state (due to lag or reset), we kicked them out.
-          // Now, we simply ignore the update if we are not in it, preventing the "Reload" to lobby effect.
-          // Only explicit disconnects or manual leaves should trigger leaveRoom.
           if (!amInList) {
-              if (isConnectingRef.current) {
-                  return; // Waiting for join
+              if (isGameConnectingRef.current) {
+                  return; 
               } else {
-                  // Do NOT leaveRoom() here. Just ignore this frame.
                   console.warn("Client not found in server state - ignoring update to prevent kick.");
                   return; 
               }
           }
 
-          // If found, I am successfully connected
-          if (isConnectingRef.current) {
-              setIsConnecting(false);
-              // Only sync from server to local ONCE when re-joining or first connecting
+          if (isGameConnectingRef.current) {
+              setIsGameConnecting(false);
               if (amInList) {
                   localMarkedNumbersRef.current = new Set(amInList.markedNumbers);
               }
@@ -671,23 +689,32 @@ const App: React.FC = () => {
       }
   };
 
+  // Uses Chat Client (EMQX)
   const sendChatMessage = (text: string, isSystem = false, systemName = '') => {
       const me = gameStateRef.current.players.find(p => p.id === playerIdRef.current);
       if (!me && !isSystem) return;
+
+      const now = Date.now();
+      if (!isSystem && now - lastChatTimeRef.current < 500) {
+        return;
+      }
+      lastChatTimeRef.current = now;
+
+      const MAX_LENGTH = 100;
+      const safeText = text.length > MAX_LENGTH ? text.substring(0, MAX_LENGTH) + '...' : text;
 
       const msg: ChatMessage = {
           id: Date.now().toString() + Math.random(),
           playerId: isSystem ? 'system' : me!.id,
           playerName: isSystem ? (systemName || 'Hệ thống') : me!.name,
-          text: text,
+          text: safeText,
           timestamp: Date.now(),
           isSystem
       };
 
-      if (clientRef.current) {
-          // Use current state code if available, otherwise assume we are in setup phase
+      if (chatClientRef.current) {
           const topic = getChatTopic(gameStateRef.current.code);
-          clientRef.current.publish(topic, JSON.stringify(msg));
+          chatClientRef.current.publish(topic, JSON.stringify(msg));
       }
   };
 
@@ -696,7 +723,6 @@ const App: React.FC = () => {
   const startGame = useCallback(() => {
     const currentState = gameStateRef.current;
     
-    // Filter only READY players to join the game
     const readyPlayers = currentState.players.filter(p => p.status === 'playing' && p.isReady);
     
     if (readyPlayers.length === 0) {
@@ -704,17 +730,14 @@ const App: React.FC = () => {
         return;
     }
 
-    // Prepare new state
     let roundPot = 0;
     const updatedPlayers = currentState.players.map(p => {
         if (p.status === 'playing') {
             if (p.isReady) {
-                 // Active player: Pay money
                  const cost = p.sheetCount * currentState.betPrice;
                  roundPot += cost;
                  return { ...p, balance: p.balance - cost };
             } else {
-                 // Not ready: Move to spectator
                  return { ...p, status: 'spectating' as const };
             }
         }
@@ -730,11 +753,10 @@ const App: React.FC = () => {
         pot: roundPot
     };
 
-    // Apply state and side effects
     setGameState(newState);
     speakText(startCommentary);
     
-    if (clientRef.current) publishState(clientRef.current, currentState.code, newState);
+    if (gameClientRef.current) publishState(gameClientRef.current, currentState.code, newState);
   }, [speakText]);
 
   const drawNumber = useCallback(async () => {
@@ -755,8 +777,7 @@ const App: React.FC = () => {
     };
 
     setGameState(newState);
-    // Always publish state when drawing a number - this syncs everything
-    if (clientRef.current) publishState(clientRef.current, newState.code, newState);
+    if (gameClientRef.current) publishState(gameClientRef.current, newState.code, newState);
   }, []);
 
   useEffect(() => {
@@ -782,11 +803,7 @@ const App: React.FC = () => {
         
         const newState = { ...currentState, mcCommentary: text };
         setGameState(newState);
-        // Do NOT publish state here just for text update, it might cause lag.
-        // Guests can generate their own or receive it in next draw?
-        // Actually for MC we need to send it.
-        // But let's check if we can skip if network is busy? No, MC is fun.
-        if (clientRef.current) publishState(clientRef.current, newState.code, newState);
+        if (gameClientRef.current) publishState(gameClientRef.current, newState.code, newState);
         setMcLoading(false);
       };
       fetchCommentary();
@@ -813,49 +830,39 @@ const App: React.FC = () => {
 
     if (!me || me.status === 'spectating') return;
 
-    // Use local ref as source of truth for current interaction
     const isMarkedLocal = localMarkedNumbersRef.current.has(num);
 
-    // FIX: Always allow UNMARKING (fixing mistakes), even if calledNumbers is desynced.
-    // For MARKING, strictly check if called.
     if (!isMarkedLocal && !currentGameState.calledNumbers.includes(num)) {
       alert("Số này chưa được gọi!");
       return;
     }
 
-    // 1. Update LOCAL REF instantly (Atomic operation)
     if (isMarkedLocal) {
         localMarkedNumbersRef.current.delete(num);
     } else {
         localMarkedNumbersRef.current.add(num);
     }
     
-    // Create a new Set for React State to trigger re-render
     const newMarked = new Set(localMarkedNumbersRef.current);
     const isWaiting = checkWaiting(me.sheets, newMarked);
 
-    // 2. Update React State Optimistically using Functional Update
-    // We use the 'newMarked' we just calculated from the Ref, ensuring
-    // we don't lose previous clicks even if 'prev' state was stale regarding the *logic*,
-    // but we use 'prev' to merge into the object structure correctly.
     setGameState(prev => {
       const updatedPlayers = prev.players.map(p => 
         p.id === myPId ? { ...p, markedNumbers: newMarked, isWaiting: isWaiting } : p
       );
       const newState = { ...prev, players: updatedPlayers };
       
-      if (me.isHost && clientRef.current) {
+      if (me.isHost && gameClientRef.current) {
           if (me.isWaiting !== isWaiting) {
-              publishState(clientRef.current, prev.code, newState);
+              publishState(gameClientRef.current, prev.code, newState);
           }
       }
       return newState;
     });
 
-    // 3. Send MQTT update ONLY if waiting status CHANGED
-    if (!me.isHost && clientRef.current) {
+    if (!me.isHost && gameClientRef.current) {
         if (me.isWaiting !== isWaiting) {
-             clientRef.current.publish(getClientTopic(currentGameState.code), JSON.stringify({
+             gameClientRef.current.publish(getClientTopic(currentGameState.code), JSON.stringify({
                 type: 'MARK_UPDATE',
                 playerId: myPId,
                 markedNumbers: Array.from(newMarked),
@@ -863,7 +870,7 @@ const App: React.FC = () => {
             }));
         }
     }
-  }, []); // Empty dependency array = stable function reference for Ticket memo
+  }, []);
 
   const handleKinhCall = useCallback(() => {
     const currentGameState = gameStateRef.current;
@@ -891,12 +898,12 @@ const App: React.FC = () => {
              setGameState(newState);
              speakText(newState.mcCommentary); 
              
-             if (clientRef.current) publishState(clientRef.current, currentGameState.code, newState);
+             if (gameClientRef.current) publishState(gameClientRef.current, currentGameState.code, newState);
              if (callIntervalRef.current) clearInterval(callIntervalRef.current);
 
         } else {
-            if (clientRef.current) {
-                clientRef.current.publish(getClientTopic(currentGameState.code), JSON.stringify({
+            if (gameClientRef.current) {
+                gameClientRef.current.publish(getClientTopic(currentGameState.code), JSON.stringify({
                     type: 'BINGO_CLAIM',
                     playerId: myPId,
                     markedNumbers: Array.from(me.markedNumbers)
@@ -921,16 +928,16 @@ const App: React.FC = () => {
             winner: null,
             winningNumbers: [],
             mcCommentary: 'Bắt đầu ván mới nào!',
-            pot: 0, // Reset pot
+            pot: 0, 
             players: prev.players.map(p => ({
                 ...p,
                 markedNumbers: new Set(),
                 isReady: p.id === playerId,
                 isWaiting: false,
-                status: 'playing', // Everyone back to playing status
+                status: 'playing', 
             }))
         };
-        if (clientRef.current) publishState(clientRef.current, prev.code, newState);
+        if (gameClientRef.current) publishState(gameClientRef.current, prev.code, newState);
         return newState;
     });
   };
@@ -940,18 +947,16 @@ const App: React.FC = () => {
   const isHost = me?.isHost;
   const isSpectator = me?.status === 'spectating';
   
-  // Calculate readiness for button display
   const readyPlayers = gameState.players.filter(p => p.status === 'playing' && p.isReady);
   const readyCount = readyPlayers.length;
   const totalPotEstimate = readyPlayers.reduce((sum, p) => sum + (p.sheetCount * gameState.betPrice), 0);
   
-  // For validation, we still need at least 1 ready player
   const canStart = readyCount > 0;
 
   if (gameState.status === 'lobby') {
     return (
         <>
-            <Lobby onCreateRoom={createRoom} onJoinRoom={joinRoom} isCreating={isConnecting} />
+            <Lobby onCreateRoom={createRoom} onJoinRoom={joinRoom} isCreating={isGameConnecting} />
             {connectionError && (
                 <div style={{position: 'fixed', top: '20px', right: '20px', background: '#fee2e2', color: '#b91c1c', padding: '1rem', borderRadius: '8px', border: '1px solid #fca5a5', zIndex: 100, display: 'flex', alignItems: 'center', gap: '0.5rem', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)'}}>
                     <AlertTriangle size={20} />
@@ -990,7 +995,7 @@ const App: React.FC = () => {
                   </button>
               )}
               <div className="room-badge">
-                {isConnecting ? <WifiOff size={16} /> : <Wifi size={16} style={{color: '#86efac'}}/>}
+                {isGameConnecting ? <WifiOff size={16} /> : <Wifi size={16} style={{color: '#86efac'}}/>}
                 Phòng: {gameState.code}
               </div>
           </div>
@@ -1343,7 +1348,7 @@ const App: React.FC = () => {
                                              <div className="text-xs bg-gray-200 px-2 py-1 rounded">Xem</div>
                                         ) : (
                                             <>
-                                            {p.isWaiting && <div className="badge-waiting"><Flame size={12} fill="#d97706" /> CHỜ</div>}
+                                            {p.isWaiting && <div className="badge-waiting"><Flame size={14} fill="#dc2626" /> CHÁY</div>}
                                             </>
                                         )}
                                     </div>
@@ -1413,14 +1418,22 @@ const App: React.FC = () => {
         )}
 
         {/* Chat Box - Moved to main container to be visible in all states except lobby */}
-        <ChatBox 
-            messages={chatMessages} 
-            currentPlayerId={playerId} 
-            onSendMessage={(text) => sendChatMessage(text)}
-            isOpen={isChatOpen}
-            setIsOpen={setIsChatOpen}
-            unreadCount={unreadChatCount}
-        />
+        {isChatConnected ? (
+          <ChatBox 
+              messages={chatMessages} 
+              currentPlayerId={playerId} 
+              onSendMessage={(text) => sendChatMessage(text)}
+              isOpen={isChatOpen}
+              setIsOpen={setIsChatOpen}
+              unreadCount={unreadChatCount}
+          />
+        ) : (
+          !isChatOpen && (
+              <div style={{position: 'fixed', bottom: '20px', right: '20px', width: '50px', height: '50px', background: '#e5e7eb', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.7}} title="Đang kết nối chat...">
+                  <MessageSquareOff size={24} color="#9ca3af" />
+              </div>
+          )
+        )}
         
       </main>
     </div>

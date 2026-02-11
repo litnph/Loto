@@ -20,12 +20,20 @@ const ChatBox: React.FC<ChatBoxProps> = ({ messages, currentPlayerId, onSendMess
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
+  // Only auto-scroll when NEW messages arrive and chat is OPEN.
+  // We removed 'isOpen' from dependencies so toggling the chat won't force scroll.
   useEffect(() => {
     if (isOpen) {
       scrollToBottom();
+    }
+  }, [messages]); 
+
+  // Focus input when opening
+  useEffect(() => {
+    if (isOpen) {
       setTimeout(() => inputRef.current?.focus(), 100);
     }
-  }, [messages, isOpen]);
+  }, [isOpen]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -46,149 +54,154 @@ const ChatBox: React.FC<ChatBoxProps> = ({ messages, currentPlayerId, onSendMess
     return colors[Math.abs(hash) % colors.length];
   };
 
-  // Render Floating Button if Closed
-  if (!isOpen) {
-    return (
-      <div className="chat-floating-btn" onClick={() => setIsOpen(true)}>
+  return (
+    <>
+      {/* Floating Button (Visible when Closed) */}
+      <div 
+        className="chat-floating-btn" 
+        onClick={() => setIsOpen(true)}
+        style={{ display: !isOpen ? 'flex' : 'none' }}
+      >
         <MessageCircle size={24} />
         {unreadCount > 0 && (
           <div className="chat-unread-badge">
             {unreadCount > 9 ? '9+' : unreadCount}
           </div>
         )}
-        <style>{`
-          .chat-floating-btn {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            width: 50px;
-            height: 50px;
-            background-color: white;
-            border-radius: 50%;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            z-index: 10000;
-            transition: transform 0.2s;
-            color: #0084ff; /* Messenger Blue Icon */
-          }
-          .chat-floating-btn:hover {
-            transform: scale(1.1);
-            background-color: #f9f9f9;
-          }
-          .chat-unread-badge {
-            position: absolute;
-            top: -5px;
-            right: -5px;
-            background-color: #fa3e3e;
-            color: white;
-            font-size: 11px;
-            font-weight: bold;
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border: 2px solid white;
-          }
-        `}</style>
-      </div>
-    );
-  }
-
-  // Render Chat Window
-  return (
-    <div className="chat-window">
-      
-      {/* 1. Header */}
-      <div className="chat-header">
-        <div className="chat-header-user">
-          <div className="chat-header-avatar">
-            <MessageCircle size={18} color="white" />
-            <div className="status-dot"></div>
-          </div>
-          <div className="chat-header-info">
-            <span className="name">Phòng Chat Lô Tô</span>
-            <span className="status">Đang hoạt động</span>
-          </div>
-        </div>
-        <div className="chat-header-actions">
-          <Minus size={20} className="header-icon" onClick={(e) => { e.stopPropagation(); setIsOpen(false); }} />
-          <X size={20} className="header-icon" onClick={(e) => { e.stopPropagation(); setIsOpen(false); }} />
-        </div>
       </div>
 
-      {/* 2. Messages Body */}
-      <div className="chat-body custom-scrollbar">
-        <div className="chat-intro">
-           <div className="intro-avatar">
-              <MessageCircle size={32} />
-           </div>
-           <h3>Loto Vui Online</h3>
-           <p>Chào mừng bạn đến với phòng chat!</p>
+      {/* Chat Window (Visible when Open) */}
+      {/* We use 'display: none' instead of removing from DOM to preserve scroll position */}
+      <div 
+        className="chat-window"
+        style={{ display: isOpen ? 'flex' : 'none' }}
+      >
+        
+        {/* 1. Header */}
+        <div className="chat-header">
+          <div className="chat-header-user">
+            <div className="chat-header-avatar">
+              <MessageCircle size={18} color="white" />
+              <div className="status-dot"></div>
+            </div>
+            <div className="chat-header-info">
+              <span className="name">Phòng Chat Lô Tô</span>
+              <span className="status">Đang hoạt động</span>
+            </div>
+          </div>
+          <div className="chat-header-actions">
+            <Minus size={20} className="header-icon" onClick={(e) => { e.stopPropagation(); setIsOpen(false); }} />
+            <X size={20} className="header-icon" onClick={(e) => { e.stopPropagation(); setIsOpen(false); }} />
+          </div>
         </div>
 
-        {messages.map((msg, index) => {
-          const isMe = msg.playerId === currentPlayerId;
-          const isSystem = msg.isSystem;
-          const isLastFromUser = index === messages.length - 1 || messages[index + 1]?.playerId !== msg.playerId;
-          
-          if (isSystem) {
-             return (
-               <div key={msg.id} className="msg-system">
-                 <span>{msg.playerName} {msg.text}</span>
-               </div>
-             );
-          }
+        {/* 2. Messages Body */}
+        <div className="chat-body custom-scrollbar">
+          <div className="chat-intro">
+             <div className="intro-avatar">
+                <MessageCircle size={32} />
+             </div>
+             <h3>Loto Vui Online</h3>
+             <p>Chào mừng bạn đến với phòng chat!</p>
+          </div>
 
-          return (
-            <div key={msg.id} className={`msg-row ${isMe ? 'msg-me' : 'msg-other'}`}>
-               {!isMe && (
-                 <div className="msg-avatar" style={{visibility: isLastFromUser ? 'visible' : 'hidden'}}>
-                    {/* Simplified avatar circle */}
-                    <div className="avatar-circle" style={{background: getAvatarColor(msg.playerName)}}>
-                      {msg.playerName.charAt(0).toUpperCase()}
+          {messages.map((msg, index) => {
+            const isMe = msg.playerId === currentPlayerId;
+            const isSystem = msg.isSystem;
+            const isLastFromUser = index === messages.length - 1 || messages[index + 1]?.playerId !== msg.playerId;
+            
+            if (isSystem) {
+               return (
+                 <div key={msg.id} className="msg-system">
+                   <span>{msg.playerName} {msg.text}</span>
+                 </div>
+               );
+            }
+
+            return (
+              <div key={msg.id} className={`msg-row ${isMe ? 'msg-me' : 'msg-other'}`}>
+                 {!isMe && (
+                   <div className="msg-avatar" style={{visibility: isLastFromUser ? 'visible' : 'hidden'}}>
+                      {/* Simplified avatar circle */}
+                      <div className="avatar-circle" style={{background: getAvatarColor(msg.playerName)}}>
+                        {msg.playerName.charAt(0).toUpperCase()}
+                      </div>
+                   </div>
+                 )}
+                 
+                 <div className="msg-content">
+                    {!isMe && isLastFromUser && <span className="msg-name">{msg.playerName}</span>}
+                    <div className="msg-bubble" title={new Date(msg.timestamp).toLocaleTimeString()}>
+                      {msg.text}
                     </div>
                  </div>
-               )}
-               
-               <div className="msg-content">
-                  {!isMe && isLastFromUser && <span className="msg-name">{msg.playerName}</span>}
-                  <div className="msg-bubble" title={new Date(msg.timestamp).toLocaleTimeString()}>
-                    {msg.text}
-                  </div>
-               </div>
-            </div>
-          );
-        })}
-        <div ref={messagesEndRef} />
-      </div>
+              </div>
+            );
+          })}
+          <div ref={messagesEndRef} />
+        </div>
 
-      {/* 3. Footer (Input) */}
-      <div className="chat-footer">
-        <form onSubmit={handleSubmit} className="input-container">
-           <input 
-             ref={inputRef}
-             type="text" 
-             placeholder="Aa" 
-             value={inputText}
-             onChange={(e) => setInputText(e.target.value)}
-           />
-        </form>
+        {/* 3. Footer (Input) */}
+        <div className="chat-footer">
+          <form onSubmit={handleSubmit} className="input-container">
+             <input 
+               ref={inputRef}
+               type="text" 
+               placeholder="Aa" 
+               value={inputText}
+               onChange={(e) => setInputText(e.target.value)}
+             />
+          </form>
 
-        <div className="send-action" onClick={handleSubmit}>
-           {inputText.trim() ? (
-             <Send size={20} color="#0084ff" style={{marginLeft: '8px', cursor: 'pointer'}} />
-           ) : (
-             <ThumbsUp size={20} color="#0084ff" style={{marginLeft: '8px', cursor: 'pointer'}} />
-           )}
+          <div className="send-action" onClick={handleSubmit}>
+             {inputText.trim() ? (
+               <Send size={20} color="#0084ff" style={{marginLeft: '8px', cursor: 'pointer'}} />
+             ) : (
+               <ThumbsUp size={20} color="#0084ff" style={{marginLeft: '8px', cursor: 'pointer'}} />
+             )}
+          </div>
         </div>
       </div>
 
       <style>{`
+        .chat-floating-btn {
+          position: fixed;
+          bottom: 20px;
+          right: 20px;
+          width: 50px;
+          height: 50px;
+          background-color: white;
+          border-radius: 50%;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+          z-index: 10000;
+          transition: transform 0.2s;
+          color: #0084ff; /* Messenger Blue Icon */
+        }
+        .chat-floating-btn:hover {
+          transform: scale(1.1);
+          background-color: #f9f9f9;
+        }
+        .chat-unread-badge {
+          position: absolute;
+          top: -5px;
+          right: -5px;
+          background-color: #fa3e3e;
+          color: white;
+          font-size: 11px;
+          font-weight: bold;
+          width: 20px;
+          height: 20px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          border: 2px solid white;
+        }
+
         .chat-window {
           position: fixed;
           bottom: 0;
@@ -401,7 +414,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ messages, currentPlayerId, onSendMess
         .custom-scrollbar::-webkit-scrollbar { width: 6px; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background-color: rgba(0,0,0,0.2); border-radius: 3px; }
       `}</style>
-    </div>
+    </>
   );
 };
 
