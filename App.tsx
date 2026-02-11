@@ -5,7 +5,7 @@ import Lobby from './components/Lobby';
 import Ticket from './components/Ticket';
 import NumberBoard from './components/NumberBoard';
 import { generateMCCommentary } from './services/geminiService';
-import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, Palette, Shuffle, X, Settings2, Flame, Coins, Plus, Eye, Trash2 } from 'lucide-react';
+import { Users, Trophy, Play, Volume2, UserCircle2, Loader2, Wifi, WifiOff, RefreshCw, AlertTriangle, VolumeX, CheckCircle2, Palette, Shuffle, X, Settings2, Flame, Coins, Plus, Eye, Trash2, Mic } from 'lucide-react';
 import mqtt from 'mqtt';
 
 const BROKER_URL = 'wss://broker.emqx.io:8084/mqtt'; 
@@ -59,7 +59,9 @@ const App: React.FC = () => {
       if (vs.length > 0) {
         setVoices(vs);
         if (!selectedVoiceURI) {
+            // Priority: Google Tiếng Việt (Chrome) -> Microsoft HoaiMy (Edge) -> Generic Vietnamese
             const viVoice = vs.find(v => v.name === 'Google Tiếng Việt') || 
+                            vs.find(v => v.name.includes('HoaiMy')) || 
                             vs.find(v => v.name.includes('Vietnamese') || v.name.includes('Tiếng Việt')) ||
                             vs.find(v => v.lang.includes('vi'));
             if (viVoice) setSelectedVoiceURI(viVoice.voiceURI);
@@ -67,8 +69,11 @@ const App: React.FC = () => {
         }
       }
     };
+    
+    // Chrome/Edge loads voices asynchronously
     window.speechSynthesis.onvoiceschanged = loadVoices;
     loadVoices();
+    
     return () => { window.speechSynthesis.onvoiceschanged = null; };
   }, [selectedVoiceURI]);
 
@@ -77,16 +82,24 @@ const App: React.FC = () => {
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = 'vi-VN'; 
+    
     const activeVoice = voices.find(v => v.voiceURI === selectedVoiceURI);
-    if (activeVoice) utterance.voice = activeVoice;
-    else {
+    if (activeVoice) {
+        utterance.voice = activeVoice;
+    } else {
+        // Fallback search if selected is missing
         const viVoice = voices.find(v => v.lang.includes('vi'));
         if (viVoice) utterance.voice = viVoice;
     }
-    utterance.rate = 0.85; 
+    
+    utterance.rate = 0.9; 
     utterance.pitch = 1.0;
     window.speechSynthesis.speak(utterance);
   }, [isMuted, voices, selectedVoiceURI]);
+
+  const handleTestVoice = () => {
+      speakText("A lô một hai ba bốn, Lô tô vui xin chào các bạn!");
+  };
 
   // --- MQTT Helpers ---
   const getHostTopic = (code: string) => `${TOPIC_PREFIX}/${code}/host`;
@@ -441,7 +454,8 @@ const App: React.FC = () => {
   // --- Game Loop (Host Only) ---
 
   const startGame = useCallback(() => {
-    const playingPlayers = gameStateRef.current.players.filter(p => p.status === 'playing');
+    const currentState = gameStateRef.current;
+    const playingPlayers = currentState.players.filter(p => p.status === 'playing');
     const allReady = playingPlayers.length > 0 && playingPlayers.every(p => p.isReady);
     
     if (!allReady) {
@@ -449,29 +463,31 @@ const App: React.FC = () => {
         return;
     }
 
-    setGameState(prev => {
-        // Calculate Pot and deduct balances
-        let roundPot = 0;
-        const updatedPlayers = prev.players.map(p => {
-            if (p.status === 'playing') {
-                const cost = p.sheetCount * prev.betPrice;
-                roundPot += cost;
-                return { ...p, balance: p.balance - cost };
-            }
-            return p;
-        });
-
-        const newState: RoomState = {
-            ...prev,
-            players: updatedPlayers,
-            status: 'playing',
-            mcCommentary: 'Trò chơi bắt đầu! Chuẩn bị dò số nào...',
-            pot: roundPot
-        };
-        speakText("Trò chơi bắt đầu!");
-        if (clientRef.current) publishState(clientRef.current, prev.code, newState);
-        return newState;
+    // Prepare new state
+    let roundPot = 0;
+    const updatedPlayers = currentState.players.map(p => {
+        if (p.status === 'playing') {
+            const cost = p.sheetCount * currentState.betPrice;
+            roundPot += cost;
+            return { ...p, balance: p.balance - cost };
+        }
+        return p;
     });
+
+    const startCommentary = 'Trò chơi bắt đầu! Chuẩn bị dò số nào...';
+    const newState: RoomState = {
+        ...currentState,
+        players: updatedPlayers,
+        status: 'playing',
+        mcCommentary: startCommentary,
+        pot: roundPot
+    };
+
+    // Apply state and side effects
+    setGameState(newState);
+    speakText(startCommentary);
+    
+    if (clientRef.current) publishState(clientRef.current, currentState.code, newState);
   }, [speakText]);
 
   const drawNumber = useCallback(async () => {
@@ -515,6 +531,7 @@ const App: React.FC = () => {
         const text = await generateMCCommentary(gameState.currentNumber!);
         const currentState = gameStateRef.current;
         if(currentState.currentNumber !== gameState.currentNumber) return;
+        
         const newState = { ...currentState, mcCommentary: text };
         setGameState(newState);
         if (clientRef.current) publishState(clientRef.current, newState.code, newState);
@@ -577,22 +594,25 @@ const App: React.FC = () => {
 
     if (winningRow) {
         if (me.isHost) {
-             setGameState(prev => {
-                    const newState = {
-                        ...prev,
-                        status: 'ended' as GameStatus,
-                        winner: me,
-                        winningNumbers: winningRow,
-                        mcCommentary: `CHÚC MỪNG! ${me.name} ĐÃ KINH RỒI!`,
-                        pot: 0,
-                        players: prev.players.map(p => 
-                          p.id === me.id ? { ...p, balance: p.balance + prev.pot } : p
-                        )
-                    };
-                    if (clientRef.current) publishState(clientRef.current, prev.code, newState);
-                    if (callIntervalRef.current) clearInterval(callIntervalRef.current);
-                    return newState;
-            });
+             const currentState = gameStateRef.current;
+             const newState = {
+                ...currentState,
+                status: 'ended' as GameStatus,
+                winner: me,
+                winningNumbers: winningRow,
+                mcCommentary: `CHÚC MỪNG! ${me.name} ĐÃ KINH RỒI!`,
+                pot: 0,
+                players: currentState.players.map(p => 
+                  p.id === me.id ? { ...p, balance: p.balance + currentState.pot } : p
+                )
+             };
+             
+             setGameState(newState);
+             speakText(newState.mcCommentary); // Side effect moved out of render cycle if possible, but here it's event handler
+             
+             if (clientRef.current) publishState(clientRef.current, currentState.code, newState);
+             if (callIntervalRef.current) clearInterval(callIntervalRef.current);
+
         } else {
             if (clientRef.current) {
                 clientRef.current.publish(getClientTopic(gameState.code), JSON.stringify({
@@ -927,11 +947,12 @@ const App: React.FC = () => {
                                 <select 
                                     value={selectedVoiceURI} 
                                     onChange={(e) => setSelectedVoiceURI(e.target.value)}
-                                    style={{border: 'none', background: 'transparent', color: '#6b7280', maxWidth: '150px', fontSize: '0.75rem', cursor: 'pointer', outline: 'none'}}
+                                    style={{border: 'none', background: 'transparent', color: '#6b7280', maxWidth: '140px', fontSize: '0.75rem', cursor: 'pointer', outline: 'none', textOverflow: 'ellipsis'}}
                                 >
                                     {voices.length === 0 && <option value="">Đang tải giọng...</option>}
-                                    {voices.map(v => <option key={v.voiceURI} value={v.voiceURI}>{v.name}</option>)}
+                                    {voices.map(v => <option key={v.voiceURI} value={v.voiceURI}>{v.name.slice(0, 25)}{v.name.length > 25 ? '...' : ''}</option>)}
                                 </select>
+                                <button onClick={handleTestVoice} className="p-1 rounded hover:bg-gray-200" title="Test loa"><Mic size={12}/></button>
                             </div>
                         </div>
                     </div>
@@ -942,7 +963,14 @@ const App: React.FC = () => {
                                 <Loader2 className="animate-spin" size={16} /> ...
                             </span>
                         ) : (
-                            <p className="mc-text" style={{fontSize: '1.1rem'}}>"{gameState.mcCommentary}"</p>
+                            <p 
+                              className="mc-text cursor-pointer hover:text-red-700 active:scale-95 transition-all" 
+                              style={{fontSize: '1.1rem'}}
+                              onClick={() => speakText(gameState.mcCommentary)}
+                              title="Bấm để đọc lại"
+                            >
+                              "{gameState.mcCommentary}"
+                            </p>
                         )}
                     </div>
 
