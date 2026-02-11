@@ -314,9 +314,10 @@ const App: React.FC = () => {
             // IMPORTANT: clearTimeout on FIRST message (either state or chat)
             clearTimeout(joinTimeout);
             
+            // Check strictly both Chat Topic and Host Topic
             if (topic === getChatTopic(roomCode)) {
                 handleChatMessage(message);
-            } else {
+            } else if (topic === getHostTopic(roomCode)) {
                 handleGuestMessage(topic, message);
             }
         });
@@ -637,17 +638,17 @@ const App: React.FC = () => {
 
           const amInList = hydratedPlayers.find(p => p.id === myId);
 
-          // FIX RACE CONDITION:
-          // If I am NOT in the list, but I am still "Connecting" (waiting for host to process join),
-          // then this is likely an old Retained Message from the broker. Ignore it.
-          // Only treat it as a "Kick" if I was already connected and stable.
+          // FIX RACE CONDITION & "RELOAD" ISSUE:
+          // Previously, if a player was temporarily missing from the host's state (due to lag or reset), we kicked them out.
+          // Now, we simply ignore the update if we are not in it, preventing the "Reload" to lobby effect.
+          // Only explicit disconnects or manual leaves should trigger leaveRoom.
           if (!amInList) {
               if (isConnectingRef.current) {
-                  return; // Ignore this update, wait for the one with my name
+                  return; // Waiting for join
               } else {
-                  alert("Bạn đã bị mời ra khỏi phòng hoặc phòng đã đóng.");
-                  leaveRoom();
-                  return;
+                  // Do NOT leaveRoom() here. Just ignore this frame.
+                  console.warn("Client not found in server state - ignoring update to prevent kick.");
+                  return; 
               }
           }
 
@@ -1301,7 +1302,7 @@ const App: React.FC = () => {
                          <div style={{marginTop: '1rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.25rem'}}>
                              <span style={{fontSize: '0.75rem', color: '#9ca3af', fontWeight: 'bold', textTransform: 'uppercase'}}>Vừa qua</span>
                              <div style={{display: 'flex', gap: '0.5rem'}}>
-                                 {gameState.calledNumbers.slice(0, -1).slice(-5).reverse().map((num, i) => (
+                                 {gameState.calledNumbers.slice(0, -1).slice(-5).map((num, i) => (
                                      <div key={i} style={{
                                          width: '2rem', height: '2rem', 
                                          borderRadius: '50%', 
