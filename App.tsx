@@ -556,12 +556,28 @@ const App: React.FC = () => {
   const handleGuestMessage = (topic: string, message: any) => {
       try {
           const remoteState = JSON.parse(message.toString());
-          const hydratedPlayers: Player[] = remoteState.players.map((p: any) => ({
-              ...p,
-              markedNumbers: new Set<number>(p.markedNumbers as number[])
-          }));
-
           const myId = playerIdRef.current;
+          
+          // CRITICAL FIX: Conflict resolution.
+          // If the player in the incoming state is ME, and I am already efficiently playing (not connecting),
+          // I trust my `localMarkedNumbersRef` MORE than the server's outdated state.
+          // This prevents the server from wiping out my recent clicks.
+          const hydratedPlayers: Player[] = remoteState.players.map((p: any) => {
+              const serverMarks = new Set<number>(p.markedNumbers as number[]);
+              
+              if (p.id === myId && !isConnectingRef.current) {
+                  return {
+                      ...p,
+                      markedNumbers: new Set(localMarkedNumbersRef.current) // Keep local state
+                  };
+              }
+
+              return {
+                  ...p,
+                  markedNumbers: serverMarks
+              };
+          });
+
           const amInList = hydratedPlayers.find(p => p.id === myId);
 
           // FIX RACE CONDITION:
@@ -581,7 +597,7 @@ const App: React.FC = () => {
           // If found, I am successfully connected
           if (isConnectingRef.current) {
               setIsConnecting(false);
-              // Sync local marked numbers ref with what server has (in case of re-join)
+              // Only sync from server to local ONCE when re-joining or first connecting
               if (amInList) {
                   localMarkedNumbersRef.current = new Set(amInList.markedNumbers);
               }

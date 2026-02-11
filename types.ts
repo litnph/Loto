@@ -46,7 +46,7 @@ export interface RoomState {
 }
 
 export const TOTAL_NUMBERS = 90;
-export const CALL_INTERVAL_MS = 4500;
+export const CALL_INTERVAL_MS = 2000;
 
 export const TICKET_COLORS = [
   '#dc2626', // Red
